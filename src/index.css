@@ -1,0 +1,172 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-accent-light: #4f46e5;
+  --brand-accent-dark: #6366f1;
+  --accent-color: var(--brand-accent-light);
+
+  --scrollbar-thumb-light: #cbd5e1;
+  --scrollbar-thumb-dark: #334155;
+  --scrollbar-thumb: var(--scrollbar-thumb-light);
+
+  --scrollbar-track-light: #f1f5f9;
+  --scrollbar-track-dark: #0f172a;
+  --scrollbar-track: var(--scrollbar-track-light);
+
+  /* Fallback for browsers without light-dark() support */
+  @media (prefers-color-scheme: dark) {
+    --accent-color: var(--brand-accent-dark);
+    --scrollbar-thumb: var(--scrollbar-thumb-dark);
+    --scrollbar-track: var(--scrollbar-track-dark);
+  }
+
+  color-scheme: light dark;
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+    --accent-color: var(--brand-accent-dark);
+    --scrollbar-thumb: var(--scrollbar-thumb-dark);
+    --scrollbar-track: var(--scrollbar-track-dark);
+  }
+
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+    --accent-color: var(--brand-accent-light);
+    --scrollbar-thumb: var(--scrollbar-thumb-light);
+    --scrollbar-track: var(--scrollbar-track-light);
+  }
+
+  @supports (color: light-dark(white, black)) {
+    --accent-color: light-dark(var(--brand-accent-light), var(--brand-accent-dark));
+    --scrollbar-thumb: light-dark(var(--scrollbar-thumb-light), var(--scrollbar-thumb-dark));
+    --scrollbar-track: light-dark(var(--scrollbar-track-light), var(--scrollbar-track-dark));
+  }
+
+  accent-color: var(--accent-color);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+@layer utilities {
+  .checkerboard {
+    background-image: 
+      linear-gradient(45deg, #1e293b 25%, transparent 25%), 
+      linear-gradient(-45deg, #1e293b 25%, transparent 25%), 
+      linear-gradient(45deg, transparent 75%, #1e293b 75%), 
+      linear-gradient(-45deg, transparent 75%, #1e293b 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    background-color: #0f172a;
+  }
+
+  .checkerboard-light {
+    background-image: 
+      linear-gradient(45deg, #e2e8f0 25%, transparent 25%), 
+      linear-gradient(-45deg, #e2e8f0 25%, transparent 25%), 
+      linear-gradient(45deg, transparent 75%, #e2e8f0 75%), 
+      linear-gradient(-45deg, transparent 75%, #e2e8f0 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    background-color: #f8fafc;
+  }
+
+  .no-select-drag {
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+@keyframes ai-shimmer-sweep {
+  0% {
+    transform: translate3d(-120%, -25%, 0) rotate(12deg);
+  }
+  100% {
+    transform: translate3d(120%, 25%, 0) rotate(12deg);
+  }
+}
+
+@keyframes ai-aurora-breathe {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 0.78;
+  }
+  50% {
+    transform: scale(1.14) rotate(6deg);
+    opacity: 0.96;
+  }
+}
+
+@keyframes ai-sparkle-pulse {
+  0%,
+  100% {
+    transform: scale(0.92) rotate(0deg);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.12) rotate(18deg);
+    opacity: 1;
+  }
+}
+
+.ai-aurora-layer {
+  background:
+    radial-gradient(circle at 22% 28%, rgba(99, 102, 241, 0.36) 0%, transparent 55%),
+    radial-gradient(circle at 78% 32%, rgba(217, 70, 239, 0.32) 0%, transparent 55%),
+    radial-gradient(circle at 65% 78%, rgba(56, 189, 248, 0.34) 0%, transparent 58%),
+    radial-gradient(circle at 28% 75%, rgba(16, 185, 129, 0.25) 0%, transparent 52%);
+  animation: ai-aurora-breathe 2.6s ease-in-out infinite;
+  will-change: transform, opacity;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    opacity: 0.65;
+  }
+}
+
+.ai-shimmer-beam {
+  background: linear-gradient(
+    105deg,
+    transparent 18%,
+    rgba(255, 255, 255, 0.06) 34%,
+    rgba(165, 180, 252, 0.34) 44%,
+    rgba(244, 114, 182, 0.36) 48%,
+    rgba(255, 255, 255, 0.78) 50%,
+    rgba(56, 189, 248, 0.38) 52%,
+    rgba(167, 139, 250, 0.32) 56%,
+    rgba(255, 255, 255, 0.06) 66%,
+    transparent 82%
+  );
+  animation: ai-shimmer-sweep 1.55s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation-duration: 8s;
+  }
+}
+
+.ai-sparkle-icon {
+  animation: ai-sparkle-pulse 1.6s ease-in-out infinite;
+  will-change: transform, opacity;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/* Legacy fallback for WebKit/Blink browsers that do not support scrollbar-color */
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+  }
+}
