@@ -8,6 +8,16 @@ export type ViewStage =
   | 'svg'
   | 'wireframe';
 
+export interface ManualErasePoint {
+  id: string;
+  /** Tọa độ X trên ảnh (0..width-1) */
+  x: number;
+  /** Tọa độ Y trên ảnh (0..height-1) */
+  y: number;
+  /** Độ nhạy lan màu tại điểm click (0..80) */
+  tolerance: number;
+}
+
 export interface VectorizerParams {
   mode: VectorizeMode;
   /** Tự động phát hiện nét vẽ mảnh và chuyển thành 1 đường Line đơn (Centerline Stroke) thay vì vẽ đa giác 2 mép */
@@ -38,6 +48,10 @@ export interface VectorizerParams {
   removeBackground?: boolean;
   /** Độ nhạy gom các sắc độ màu nền tương đồng từ viền ảnh (5..80, mặc định 24) */
   bgTolerance?: number;
+  /** Danh sách các điểm người dùng chủ động click để xóa vùng màu tại đó */
+  manualErases?: ManualErasePoint[];
+  /** Độ nhạy lan màu khi click xóa chủ động (0..80, mặc định 18) */
+  manualEraseTolerance?: number;
 }
 
 export interface PaletteColor {

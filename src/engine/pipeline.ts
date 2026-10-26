@@ -115,7 +115,8 @@ export function runVectorizationPipeline(
     paletteOverrides,
     thinStrokeMask,
     params.removeBackground ?? false,
-    params.bgTolerance ?? 24
+    params.bgTolerance ?? 24,
+    params.manualErases ?? []
   );
   const despeckleMs = Math.round(performance.now() - t2);
 

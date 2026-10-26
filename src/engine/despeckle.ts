@@ -2,7 +2,11 @@
  * BƯỚC 3: LỌC ĐỐM VỤN & HÒA TAN VÙNG NHỎ (CONNECTED COMPONENTS DESPECKLE)
  */
 
-import { PaletteColor, PaletteOverride } from '../types/vectorizer';
+import {
+  ManualErasePoint,
+  PaletteColor,
+  PaletteOverride,
+} from '../types/vectorizer';
 
 export function cleanBinaryStrokeMask(
   mask: Uint8Array,
@@ -63,7 +67,8 @@ export function applyPaletteOverridesAndDespeckle(
   overrides: Record<number, PaletteOverride>,
   thinStrokeMask?: Uint8Array,
   removeBackground = false,
-  bgTolerance = 24
+  bgTolerance = 24,
+  manualErases: ManualErasePoint[] = []
 ): {
   cleanedLabelMap: Int32Array;
   updatedPalette: PaletteColor[];
@@ -583,7 +588,6 @@ export function applyPaletteOverridesAndDespeckle(
   }
 
   let cleanedStrokeMask: Uint8Array | undefined;
-  let strokeMaskCount = 0;
   if (thinStrokeMask) {
     cleanedStrokeMask = cleanBinaryStrokeMask(
       thinStrokeMask,
@@ -591,6 +595,221 @@ export function applyPaletteOverridesAndDespeckle(
       height,
       Math.max(4, Math.floor(minArea * 0.4))
     );
+  }
+
+  // XÓA VÙNG CHỦ ĐỘNG (INTERACTIVE CLICK-TO-ERASE):
+  // Tại mỗi tọa độ (x, y) người dùng click, tự động loang (Flood-Fill) để xóa vùng màu liên thông
+  // tại điểm đó (dừng tại nét viền thinStrokeMask và biên các màu khác) hoặc xóa nét vẽ mảnh rời rạc.
+  if (manualErases && manualErases.length > 0) {
+    const eraseQueue = new Int32Array(totalPixels);
+    const eraseVisited = new Uint8Array(totalPixels);
+    const dx8 = [0, 1, 1, 1, 0, -1, -1, -1];
+    const dy8 = [-1, -1, 0, 1, 1, 1, 0, -1];
+
+    for (let m = 0; m < manualErases.length; m++) {
+      const pt = manualErases[m];
+      const sx = Math.max(0, Math.min(width - 1, Math.round(pt.x)));
+      const sy = Math.max(0, Math.min(height - 1, Math.round(pt.y)));
+      const seedIdx = sy * width + sx;
+
+      // Tìm điểm pixel mảng màu hợp lệ gần vị trí click nhất (bán kính 2px) phòng khi click trúng sát mép viền mảnh
+      let actualSeedIdx = -1;
+      if (
+        cleanedLabelMap[seedIdx] >= 0 &&
+        (!cleanedStrokeMask || cleanedStrokeMask[seedIdx] === 0)
+      ) {
+        actualSeedIdx = seedIdx;
+      } else {
+        for (let r = 1; r <= 2 && actualSeedIdx < 0; r++) {
+          for (let dy = -r; dy <= r && actualSeedIdx < 0; dy++) {
+            const ny = sy + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (let dx = -r; dx <= r; dx++) {
+              const nx = sx + dx;
+              if (nx < 0 || nx >= width) continue;
+              const nIdx = ny * width + nx;
+              if (
+                cleanedLabelMap[nIdx] >= 0 &&
+                (!cleanedStrokeMask || cleanedStrokeMask[nIdx] === 0)
+              ) {
+                actualSeedIdx = nIdx;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Trường hợp 1: Xóa mảng màu liên thông (Flood-Fill dừng tại nét viền và biên màu khác)
+      if (actualSeedIdx >= 0) {
+        const seedLbl = cleanedLabelMap[actualSeedIdx];
+        const seedCol = palette[seedLbl];
+        const maxDist = Math.max(0, pt.tolerance ?? 18) * 1.9;
+        const canEraseCluster = new Uint8Array(numColors);
+        canEraseCluster[seedLbl] = 1;
+
+        if (maxDist > 0 && seedCol) {
+          for (let c = 0; c < numColors; c++) {
+            if (palette[c].isStrokeLayer) continue;
+            const d = Math.hypot(
+              palette[c].r - seedCol.r,
+              palette[c].g - seedCol.g,
+              palette[c].b - seedCol.b
+            );
+            if (d <= maxDist) {
+              canEraseCluster[c] = 1;
+            }
+          }
+        }
+
+        const isWall = (idx: number): boolean => {
+          if (cleanedStrokeMask && cleanedStrokeMask[idx] === 1) return true;
+          const lbl = cleanedLabelMap[idx];
+          return lbl >= 0 && canEraseCluster[lbl] === 0;
+        };
+
+        eraseVisited.fill(0);
+        let head = 0;
+        let tail = 0;
+        eraseVisited[actualSeedIdx] = 1;
+        eraseQueue[tail++] = actualSeedIdx;
+
+        while (head < tail) {
+          const curr = eraseQueue[head++];
+          const cx = curr % width;
+          const cy = (curr - cx) / width;
+
+          // Chống rò rỉ qua khe hẹp 1px giữa 2 tường chắn (trừ đúng điểm hạt giống ban đầu)
+          if (curr !== actualSeedIdx) {
+            const wallUp = cy > 0 && isWall(curr - width);
+            const wallDn = cy + 1 < height && isWall(curr + width);
+            const wallLf = cx > 0 && isWall(curr - 1);
+            const wallRt = cx + 1 < width && isWall(curr + 1);
+            if ((wallUp && wallDn) || (wallLf && wallRt)) {
+              continue;
+            }
+          }
+
+          if (cx > 0) {
+            const nIdx = curr - 1;
+            const nLbl = cleanedLabelMap[nIdx];
+            if (
+              !eraseVisited[nIdx] &&
+              !isWall(nIdx) &&
+              nLbl >= 0 &&
+              canEraseCluster[nLbl]
+            ) {
+              eraseVisited[nIdx] = 1;
+              eraseQueue[tail++] = nIdx;
+            }
+          }
+          if (cx + 1 < width) {
+            const nIdx = curr + 1;
+            const nLbl = cleanedLabelMap[nIdx];
+            if (
+              !eraseVisited[nIdx] &&
+              !isWall(nIdx) &&
+              nLbl >= 0 &&
+              canEraseCluster[nLbl]
+            ) {
+              eraseVisited[nIdx] = 1;
+              eraseQueue[tail++] = nIdx;
+            }
+          }
+          if (cy > 0) {
+            const nIdx = curr - width;
+            const nLbl = cleanedLabelMap[nIdx];
+            if (
+              !eraseVisited[nIdx] &&
+              !isWall(nIdx) &&
+              nLbl >= 0 &&
+              canEraseCluster[nLbl]
+            ) {
+              eraseVisited[nIdx] = 1;
+              eraseQueue[tail++] = nIdx;
+            }
+          }
+          if (cy + 1 < height) {
+            const nIdx = curr + width;
+            const nLbl = cleanedLabelMap[nIdx];
+            if (
+              !eraseVisited[nIdx] &&
+              !isWall(nIdx) &&
+              nLbl >= 0 &&
+              canEraseCluster[nLbl]
+            ) {
+              eraseVisited[nIdx] = 1;
+              eraseQueue[tail++] = nIdx;
+            }
+          }
+        }
+
+        // Xóa toàn bộ pixel trong vùng loang và gọt 1px màu lót dưới nét viền mảnh kế bên
+        for (let i = 0; i < tail; i++) {
+          const idx = eraseQueue[i];
+          cleanedLabelMap[idx] = -1;
+          if (cleanedStrokeMask) {
+            const cx = idx % width;
+            const cy = (idx - cx) / width;
+            if (cx > 0 && cleanedStrokeMask[idx - 1]) {
+              cleanedLabelMap[idx - 1] = -1;
+            }
+            if (cx + 1 < width && cleanedStrokeMask[idx + 1]) {
+              cleanedLabelMap[idx + 1] = -1;
+            }
+            if (cy > 0 && cleanedStrokeMask[idx - width]) {
+              cleanedLabelMap[idx - width] = -1;
+            }
+            if (cy + 1 < height && cleanedStrokeMask[idx + width]) {
+              cleanedLabelMap[idx + width] = -1;
+            }
+          }
+        }
+      } else if (cleanedStrokeMask) {
+        // Trường hợp 2: Nếu click trực tiếp vào nét vẽ đơn trên nền đã trong suốt -> xóa nhánh nét vẽ đó
+        let strokeSeed = -1;
+        for (let r = 0; r <= 3 && strokeSeed < 0; r++) {
+          for (let dy = -r; dy <= r && strokeSeed < 0; dy++) {
+            const ny = sy + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (let dx = -r; dx <= r; dx++) {
+              const nx = sx + dx;
+              if (nx < 0 || nx >= width) continue;
+              const nIdx = ny * width + nx;
+              if (cleanedStrokeMask[nIdx]) {
+                strokeSeed = nIdx;
+                break;
+              }
+            }
+          }
+        }
+        if (strokeSeed >= 0) {
+          let head = 0;
+          let tail = 0;
+          cleanedStrokeMask[strokeSeed] = 0;
+          eraseQueue[tail++] = strokeSeed;
+          while (head < tail) {
+            const curr = eraseQueue[head++];
+            const cx = curr % width;
+            const cy = (curr - cx) / width;
+            for (let d = 0; d < 8; d++) {
+              const nx = cx + dx8[d];
+              const ny = cy + dy8[d];
+              if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+              const nIdx = ny * width + nx;
+              if (cleanedStrokeMask[nIdx]) {
+                cleanedStrokeMask[nIdx] = 0;
+                eraseQueue[tail++] = nIdx;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  let strokeMaskCount = 0;
+  if (cleanedStrokeMask) {
     for (let i = 0; i < totalPixels; i++) {
       if (cleanedStrokeMask[i]) strokeMaskCount++;
     }

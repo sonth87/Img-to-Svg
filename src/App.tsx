@@ -10,6 +10,10 @@ import {
   X,
   Sun,
   Moon,
+  Undo2,
+  Redo2,
+  History,
+  Trash2,
 } from 'lucide-react';
 import {
   PaletteOverride,
@@ -21,9 +25,28 @@ import { DEFAULT_PARAMS, SAMPLE_PRESETS } from './engine/sampleImages';
 import { ControlPanel } from './components/ControlPanel';
 import { ViewportCanvas } from './components/ViewportCanvas';
 import { PaletteManager } from './components/PaletteManager';
+import { InfoTooltip } from './components/InfoTooltip';
 import VectorizerWorker from './engine/worker?worker';
 
 const MAX_PROCESSING_DIMENSION = 1024;
+const MAX_HISTORY_ENTRIES = 40;
+
+interface HistoryEntry {
+  id: number;
+  label: string;
+  time: string;
+  params: VectorizerParams;
+  paletteOverrides: Record<number, PaletteOverride>;
+}
+
+function formatNowTime(): string {
+  const d = new Date();
+  return d.toLocaleTimeString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
 
 function getSystemScheme(): 'light' | 'dark' {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -52,13 +75,33 @@ export const App: React.FC = () => {
   const [currentImageName, setCurrentImageName] = useState<string>(
     SAMPLE_PRESETS[0].name
   );
-  const [params, setParams] = useState<VectorizerParams>(
-    SAMPLE_PRESETS[0].recommendedParams
-  );
+  const [params, setParams] = useState<VectorizerParams>(() => ({
+    ...SAMPLE_PRESETS[0].recommendedParams,
+    manualErases: [],
+    manualEraseTolerance: 18,
+  }));
   const [paletteOverrides, setPaletteOverrides] = useState<
     Record<number, PaletteOverride>
   >({});
   const [viewStage, setViewStage] = useState<ViewStage>('split');
+  const [isEraserMode, setIsEraserMode] = useState<boolean>(false);
+
+  // Quản lý Lịch sử thao tác (Undo / Redo / History Timeline)
+  const [history, setHistory] = useState<HistoryEntry[]>(() => [
+    {
+      id: 1,
+      label: 'Khởi tạo mặc định',
+      time: formatNowTime(),
+      params: {
+        ...SAMPLE_PRESETS[0].recommendedParams,
+        manualErases: [],
+        manualEraseTolerance: 18,
+      },
+      paletteOverrides: {},
+    },
+  ]);
+  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const [showHistoryPopup, setShowHistoryPopup] = useState<boolean>(false);
 
   const [originalDataUrl, setOriginalDataUrl] = useState<string | null>(null);
   const [sourceImageInfo, setSourceImageInfo] = useState<{
@@ -89,8 +132,150 @@ export const App: React.FC = () => {
     newImageLoaded?: boolean;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const historyPopupRef = useRef<HTMLDivElement | null>(null);
+  const historyEntryIdRef = useRef<number>(2);
+  const historyDebounceTimerRef = useRef<number | null>(null);
+  const historyIndexRef = useRef<number>(0);
 
-  // Đồng bộ <meta name="color-scheme"> theo đúng chuẩn modern-web-guidance (dark-mode-toggle)
+  useEffect(() => {
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
+
+  const commitHistorySnapshot = useCallback(
+    (
+      nextParams: VectorizerParams,
+      nextOverrides: Record<number, PaletteOverride>,
+      label: string,
+      immediate = true
+    ) => {
+      if (historyDebounceTimerRef.current !== null) {
+        window.clearTimeout(historyDebounceTimerRef.current);
+        historyDebounceTimerRef.current = null;
+      }
+
+      const doCommit = () => {
+        const snapshotParams: VectorizerParams = {
+          ...nextParams,
+          manualErases: [...(nextParams.manualErases ?? [])],
+        };
+        const snapshotOverrides: Record<number, PaletteOverride> = {
+          ...nextOverrides,
+        };
+        const entry: HistoryEntry = {
+          id: historyEntryIdRef.current++,
+          label,
+          time: formatNowTime(),
+          params: snapshotParams,
+          paletteOverrides: snapshotOverrides,
+        };
+
+        setHistory((prev) => {
+          const sliced = prev.slice(0, historyIndexRef.current + 1);
+          const nextList = [...sliced, entry];
+          if (nextList.length > MAX_HISTORY_ENTRIES) {
+            nextList.shift();
+          }
+          const newIdx = nextList.length - 1;
+          historyIndexRef.current = newIdx;
+          setHistoryIndex(newIdx);
+          return nextList;
+        });
+      };
+
+      if (immediate) {
+        doCommit();
+      } else {
+        historyDebounceTimerRef.current = window.setTimeout(doCommit, 320);
+      }
+    },
+    []
+  );
+
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
+
+  const jumpToHistoryIndex = useCallback(
+    (targetIdx: number) => {
+      if (targetIdx < 0 || targetIdx >= history.length) return;
+      if (historyDebounceTimerRef.current !== null) {
+        window.clearTimeout(historyDebounceTimerRef.current);
+        historyDebounceTimerRef.current = null;
+      }
+      const target = history[targetIdx];
+      historyIndexRef.current = targetIdx;
+      setHistoryIndex(targetIdx);
+      setParams({
+        ...target.params,
+        manualErases: [...(target.params.manualErases ?? [])],
+      });
+      setPaletteOverrides({ ...target.paletteOverrides });
+    },
+    [history]
+  );
+
+  const handleUndo = useCallback(() => {
+    if (historyIndexRef.current > 0) {
+      jumpToHistoryIndex(historyIndexRef.current - 1);
+    }
+  }, [jumpToHistoryIndex]);
+
+  const handleRedo = useCallback(() => {
+    if (historyIndexRef.current < history.length - 1) {
+      jumpToHistoryIndex(historyIndexRef.current + 1);
+    }
+  }, [history.length, jumpToHistoryIndex]);
+
+  // Đóng History Popover khi click ra ngoài
+  useEffect(() => {
+    if (!showHistoryPopup) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!historyPopupRef.current?.contains(e.target as Node)) {
+        setShowHistoryPopup(false);
+      }
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [showHistoryPopup]);
+
+  // Phím tắt toàn cục: Ctrl+Z / Cmd+Z (Undo), Ctrl+Y / Cmd+Shift+Z (Redo), E (Xóa chủ động), Esc (Thoát)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+      if (!isInput && !e.metaKey && !e.ctrlKey && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        setIsEraserMode((prev) => !prev);
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (showHistoryPopup) setShowHistoryPopup(false);
+        else if (showSvgCodeModal) setShowSvgCodeModal(false);
+        else if (isEraserMode) setIsEraserMode(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndo, handleRedo, isEraserMode, showHistoryPopup, showSvgCodeModal]);
+
   const applySchemeToMeta = useCallback((stored: 'light' | 'dark' | null) => {
     const meta = document.querySelector<HTMLMetaElement>(
       'meta[name="color-scheme"]'
@@ -104,7 +289,6 @@ export const App: React.FC = () => {
   useEffect(() => {
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
     const handleMediaChange = () => {
-      // Chỉ cập nhật UI nếu người dùng đang để mặc định theo hệ thống (không xóa stored value!)
       if (!getStoredScheme()) {
         setResolvedScheme(getSystemScheme());
       }
@@ -131,7 +315,6 @@ export const App: React.FC = () => {
 
     try {
       if (targetScheme === systemScheme) {
-        // Nếu đích trùng với hệ thống -> Xóa override để quay về tự động theo hệ thống
         localStorage.removeItem('color-scheme');
         applySchemeToMeta(null);
       } else {
@@ -143,7 +326,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Khởi tạo Web Worker với cơ chế Latest-Job Latch (chống nghẽn hàng đợi khi kéo thanh trượt liên tục)
+  // Khởi tạo Web Worker với cơ chế Latest-Job Latch
   useEffect(() => {
     const worker = new VectorizerWorker();
     worker.onmessage = (
@@ -161,7 +344,6 @@ export const App: React.FC = () => {
         workerBusyRef.current = false;
       }
 
-      // Hiển thị ngay mọi khung hình mới hơn khung hình hiện tại để giao diện phản hồi trực tiếp khi kéo thanh trượt!
       if (e.data.result && e.data.jobId >= lastRenderedJobIdRef.current) {
         lastRenderedJobIdRef.current = e.data.jobId;
         setResult(e.data.result);
@@ -181,15 +363,9 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Hàm nạp một mẫu ảnh có sẵn (Sample Preset)
-  const loadSamplePreset = useCallback((sampleId: string) => {
-    const preset =
-      SAMPLE_PRESETS.find((s) => s.id === sampleId) || SAMPLE_PRESETS[0];
-    setActiveSampleId(preset.id);
-    setCurrentImageName(preset.name);
-    setPaletteOverrides({});
-    setParams(preset.recommendedParams);
-
+  // Khởi tạo canvas mặc định ban đầu
+  useEffect(() => {
+    const preset = SAMPLE_PRESETS[0];
     const w = 480;
     const h = 480;
     const canvas = document.createElement('canvas');
@@ -211,12 +387,7 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  // Tải mẫu đầu tiên khi mở ứng dụng
-  useEffect(() => {
-    loadSamplePreset(SAMPLE_PRESETS[0].id);
-  }, [loadSamplePreset]);
-
-  // Xử lý file ảnh người dùng tải lên (JPG, PNG, WebP, Paste Clipboard)
+  // Xử lý file ảnh người dùng tải lên
   const handleFileSelected = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) return;
 
@@ -243,9 +414,29 @@ export const App: React.FC = () => {
         const imgData = ctx.getImageData(0, 0, w, h);
 
         needsPixelTransferRef.current = true;
+        const imgName = file.name || 'Ảnh dán từ Clipboard';
         setActiveSampleId('custom');
-        setCurrentImageName(file.name || 'Ảnh dán từ Clipboard');
+        setCurrentImageName(imgName);
         setPaletteOverrides({});
+
+        setParams((prev) => {
+          const freshParams: VectorizerParams = {
+            ...prev,
+            manualErases: [],
+          };
+          const initialEntry: HistoryEntry = {
+            id: historyEntryIdRef.current++,
+            label: `Tải ảnh: ${imgName}`,
+            time: formatNowTime(),
+            params: freshParams,
+            paletteOverrides: {},
+          };
+          historyIndexRef.current = 0;
+          setHistoryIndex(0);
+          setHistory([initialEntry]);
+          return freshParams;
+        });
+
         setOriginalDataUrl(canvas.toDataURL('image/png'));
         setSourceImageInfo({
           width: w,
@@ -277,7 +468,7 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('paste', handlePaste);
   }, [handleFileSelected]);
 
-  // Gửi công việc sang Web Worker mỗi khi ảnh hoặc tham số thay đổi (qua Latest-Job Latch)
+  // Gửi công việc sang Web Worker
   useEffect(() => {
     if (!sourceImageInfo || !workerRef.current) return;
 
@@ -299,7 +490,6 @@ export const App: React.FC = () => {
     };
 
     if (workerBusyRef.current) {
-      // Nếu gói trước có chứa sourcePixels của ảnh mới tải lên thì giữ lại để không bị mất
       const prevPixels = pendingPayloadRef.current?.sourcePixels;
       const prevNewImage = pendingPayloadRef.current?.newImageLoaded;
       pendingPayloadRef.current = {
@@ -313,35 +503,109 @@ export const App: React.FC = () => {
     }
   }, [sourceImageInfo, params, paletteOverrides]);
 
+  // Xử lý khi người dùng click xóa vùng chủ động tại tọa độ (x, y)
+  const handleEraseAtPoint = useCallback(
+    (x: number, y: number) => {
+      setParams((prev) => {
+        const tolerance = prev.manualEraseTolerance ?? 18;
+        const nextErases = [
+          ...(prev.manualErases ?? []),
+          {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            x,
+            y,
+            tolerance,
+          },
+        ];
+        const nextParams: VectorizerParams = {
+          ...prev,
+          manualErases: nextErases,
+        };
+        commitHistorySnapshot(
+          nextParams,
+          paletteOverrides,
+          `Xóa vùng tại (${x}, ${y})`,
+          true
+        );
+        return nextParams;
+      });
+    },
+    [commitHistorySnapshot, paletteOverrides]
+  );
+
+  const handleClearManualErases = useCallback(() => {
+    setParams((prev) => {
+      if (!prev.manualErases?.length) return prev;
+      const nextParams: VectorizerParams = {
+        ...prev,
+        manualErases: [],
+      };
+      commitHistorySnapshot(
+        nextParams,
+        paletteOverrides,
+        'Khôi phục các vùng đã click xóa',
+        true
+      );
+      return nextParams;
+    });
+  }, [commitHistorySnapshot, paletteOverrides]);
+
   // Thao tác trên bảng màu (Palette Manager)
   const handleToggleVisibility = (colorId: number, currentVisible: boolean) => {
-    setPaletteOverrides((prev) => ({
-      ...prev,
-      [colorId]: {
-        ...prev[colorId],
-        visible: !currentVisible,
-      },
-    }));
+    setPaletteOverrides((prev) => {
+      const next = {
+        ...prev,
+        [colorId]: {
+          ...prev[colorId],
+          visible: !currentVisible,
+        },
+      };
+      commitHistorySnapshot(
+        params,
+        next,
+        `${currentVisible ? 'Ẩn' : 'Hiện'} lớp màu #${colorId + 1}`,
+        true
+      );
+      return next;
+    });
   };
 
   const handleChangeCustomColor = (colorId: number, newHex: string) => {
-    setPaletteOverrides((prev) => ({
-      ...prev,
-      [colorId]: {
-        ...prev[colorId],
-        customHex: newHex,
-      },
-    }));
+    setPaletteOverrides((prev) => {
+      const next = {
+        ...prev,
+        [colorId]: {
+          ...prev[colorId],
+          customHex: newHex,
+        },
+      };
+      commitHistorySnapshot(
+        params,
+        next,
+        `Đổi màu lớp #${colorId + 1} → ${newHex.toUpperCase()}`,
+        false
+      );
+      return next;
+    });
   };
 
   const handleMergeColor = (sourceColorId: number, targetColorId: number) => {
-    setPaletteOverrides((prev) => ({
-      ...prev,
-      [sourceColorId]: {
-        ...prev[sourceColorId],
-        mergedInto: targetColorId,
-      },
-    }));
+    setPaletteOverrides((prev) => {
+      const next = {
+        ...prev,
+        [sourceColorId]: {
+          ...prev[sourceColorId],
+          mergedInto: targetColorId,
+        },
+      };
+      commitHistorySnapshot(
+        params,
+        next,
+        `Gộp lớp màu #${sourceColorId + 1} vào #${targetColorId + 1}`,
+        true
+      );
+      return next;
+    });
   };
 
   const handleCopySvg = async () => {
@@ -382,22 +646,37 @@ export const App: React.FC = () => {
       }}
       className="h-screen w-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden transition-colors"
     >
-      {/* Top Navbar */}
-      <header className="h-14 shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between gap-3 transition-colors">
+      {/* Top Navbar tối giản */}
+      <header className="h-12 shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3.5 flex items-center justify-between gap-3 transition-colors">
         {/* Brand + Upload Button */}
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-white font-bold shadow">
-            <Cpu className="w-4 h-4" />
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-white font-bold shadow">
+            <Cpu className="w-3.5 h-3.5" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">
-                AlgoTrace Studio
-              </h1>
-              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
-                100% Thuật Toán
-              </span>
-            </div>
+          <div className="flex items-center gap-1.5">
+            <h1 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">
+              AlgoTrace Studio
+            </h1>
+            <InfoTooltip
+              side="bottom"
+              title="AlgoTrace Studio — 100% Thuật Toán Hình Học"
+              content={
+                <div className="space-y-1">
+                  <p>
+                    Chuyển đổi ảnh sang Vector SVG sắc nét bằng chuỗi 5 bước:
+                    Bilateral Shock Smoothing → K-Means++ CIELAB → Tách nền &
+                    Lọc đốm → Marching Squares → Khớp đường cong Cubic Bézier.
+                  </p>
+                  {result && (
+                    <p className="font-mono text-[10px] text-indigo-300 pt-1 border-t border-slate-700">
+                      Hiện tại: {result.stats.totalPaths} paths ·{' '}
+                      {result.stats.totalNodes.toLocaleString()} nodes ·{' '}
+                      {(result.stats.svgBytes / 1024).toFixed(1)} KB
+                    </p>
+                  )}
+                </div>
+              }
+            />
           </div>
 
           <input
@@ -414,88 +693,159 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="ml-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow flex items-center gap-1.5 transition shrink-0 cursor-pointer"
+            className="ml-1 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm flex items-center gap-1.5 transition shrink-0 cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5" />
-            Tải Ảnh Lên (JPG / PNG)
+            <span>Tải Ảnh Lên</span>
           </button>
         </div>
 
-        {/* Sample Presets */}
-        <div className="flex items-center gap-1.5 overflow-x-auto">
-          <span className="text-xs text-slate-500 dark:text-slate-400 mr-1 hidden xl:inline">
-            Hoặc thử mẫu:
-          </span>
-          {SAMPLE_PRESETS.map((sample) => (
-            <button
-              key={sample.id}
-              type="button"
-              onClick={() => loadSamplePreset(sample.id)}
-              title={sample.subtitle}
-              className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition shrink-0 ${
-                activeSampleId === sample.id
-                  ? 'bg-indigo-50 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 border border-indigo-400/60 dark:border-indigo-500/50'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60 border border-transparent'
+        {/* Bộ điều khiển Lịch Sử (Undo / Redo / History Timeline Popover) */}
+        <div
+          ref={historyPopupRef}
+          className="relative flex items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/80"
+        >
+          <button
+            type="button"
+            disabled={!canUndo}
+            onClick={handleUndo}
+            title="Hoàn tác (Ctrl+Z / Cmd+Z)"
+            className="px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Hoàn tác</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={!canRedo}
+            onClick={handleRedo}
+            title="Làm lại (Ctrl+Y / Cmd+Shift+Z)"
+            className="px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Làm lại</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowHistoryPopup((prev) => !prev)}
+            title="Xem danh sách lịch sử các bước thao tác"
+            className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition cursor-pointer ${
+              showHistoryPopup
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>Lịch sử</span>
+            <span
+              className={`text-[10px] font-mono px-1 rounded ${
+                showHistoryPopup
+                  ? 'bg-indigo-800 text-indigo-100'
+                  : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
               }`}
             >
-              {sample.name}
-            </button>
-          ))}
-        </div>
+              {historyIndex + 1}/{history.length}
+            </span>
+          </button>
 
-        {/* Stats, Theme Toggle & Export Actions */}
-        <div className="flex items-center gap-2 shrink-0">
-          {result && (
-            <div className="hidden 2xl:flex items-center gap-3 px-3 py-1 rounded-md bg-slate-100 dark:bg-slate-950/90 border border-slate-200 dark:border-slate-800 text-xs">
-              <div>
-                <span className="text-slate-500">Paths: </span>
-                <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  {result.stats.totalPaths}
+          {/* Popup danh sách Lịch sử */}
+          {showHistoryPopup && (
+            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+              <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <History className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  Lịch sử thao tác ({history.length} bước)
                 </span>
+                {(params.manualErases?.length ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleClearManualErases();
+                      setShowHistoryPopup(false);
+                    }}
+                    className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Xóa điểm click
+                  </button>
+                )}
               </div>
-              <div>
-                <span className="text-slate-500">Nodes: </span>
-                <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                  {result.stats.totalNodes.toLocaleString()}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500">Size: </span>
-                <span className="font-mono font-semibold text-indigo-600 dark:text-indigo-400">
-                  {(result.stats.svgBytes / 1024).toFixed(1)} KB
-                </span>
+              <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/70">
+                {history.map((item, idx) => {
+                  const isCurrent = idx === historyIndex;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        jumpToHistoryIndex(idx);
+                        setShowHistoryPopup(false);
+                      }}
+                      className={`w-full px-3 py-2 text-left text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
+                        isCurrent
+                          ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold'
+                          : idx > historyIndex
+                          ? 'text-slate-400 dark:text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                      }`}
+                    >
+                      <span className="truncate flex items-center gap-1.5">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            isCurrent
+                              ? 'bg-indigo-600 dark:bg-indigo-400'
+                              : idx < historyIndex
+                              ? 'bg-emerald-500'
+                              : 'bg-slate-400'
+                          }`}
+                        />
+                        <span className="truncate">
+                          {idx + 1}. {item.label}
+                        </span>
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                        {item.time}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
+        </div>
 
-          {/* Nút chuyển đổi Giao diện Sáng / Tối */}
+        {/* Theme Toggle & Export Actions */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {result && (
+            <span className="hidden lg:inline-block font-mono text-[11px] text-slate-500 dark:text-slate-400 mr-1">
+              {(result.stats.svgBytes / 1024).toFixed(1)} KB
+            </span>
+          )}
+
           <button
             type="button"
             onClick={handleToggleColorScheme}
             title={
               resolvedScheme === 'dark'
-                ? 'Chuyển sang Giao diện Sáng (Light Mode)'
-                : 'Chuyển sang Giao diện Tối (Dark Mode)'
+                ? 'Chuyển sang Giao diện Sáng'
+                : 'Chuyển sang Giao diện Tối'
             }
-            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 flex items-center gap-1.5 transition cursor-pointer"
+            className="p-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 transition cursor-pointer"
           >
             {resolvedScheme === 'dark' ? (
-              <>
-                <Sun className="w-3.5 h-3.5 text-amber-400" />
-                <span>Sáng</span>
-              </>
+              <Sun className="w-3.5 h-3.5 text-amber-400" />
             ) : (
-              <>
-                <Moon className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Tối</span>
-              </>
+              <Moon className="w-3.5 h-3.5 text-indigo-600" />
             )}
           </button>
 
           <button
             type="button"
             onClick={() => setShowSvgCodeModal(true)}
-            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition"
+            title="Xem mã nguồn XML SVG"
+            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
           >
             <Code2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
             <span className="hidden md:inline">Mã SVG</span>
@@ -504,19 +854,20 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={handleCopySvg}
-            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition"
+            title="Sao chép mã SVG vào Clipboard"
+            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
           >
             {copiedSvg ? (
               <>
                 <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                 <span className="text-emerald-600 dark:text-emerald-400">
-                  Đã chép!
+                  Đã chép
                 </span>
               </>
             ) : (
               <>
                 <Copy className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Copy SVG</span>
+                <span className="hidden md:inline">Copy</span>
               </>
             )}
           </button>
@@ -524,10 +875,10 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={handleDownloadSvg}
-            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow flex items-center gap-1.5 transition"
+            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            Xuất .SVG
+            <span>Xuất .SVG</span>
           </button>
         </div>
       </header>
@@ -542,8 +893,11 @@ export const App: React.FC = () => {
           imageDimensions={
             result ? { width: result.width, height: result.height } : null
           }
+          isEraserMode={isEraserMode}
+          onToggleEraserMode={() => setIsEraserMode((prev) => !prev)}
+          onClearManualErases={handleClearManualErases}
           onUploadFile={handleFileSelected}
-          onChange={(updater) => {
+          onChange={(updater, actionLabel) => {
             setParams((prev) => {
               const next = updater(prev);
               const quantChanged =
@@ -554,16 +908,41 @@ export const App: React.FC = () => {
                 prev.monochromeThreshold !== next.monochromeThreshold ||
                 prev.invertMonochrome !== next.invertMonochrome ||
                 prev.singleLineStrokes !== next.singleLineStrokes;
+              const nextOverrides = quantChanged ? {} : paletteOverrides;
               if (quantChanged) {
                 setPaletteOverrides({});
               }
+              const isImmediate =
+                prev.mode !== next.mode ||
+                prev.removeBackground !== next.removeBackground ||
+                prev.layerMode !== next.layerMode ||
+                prev.singleLineStrokes !== next.singleLineStrokes ||
+                prev.invertMonochrome !== next.invertMonochrome;
+
+              commitHistorySnapshot(
+                next,
+                nextOverrides,
+                actionLabel ?? 'Chỉnh thông số thuật toán',
+                isImmediate
+              );
               return next;
             });
           }}
           onReset={() => {
             setPaletteOverrides({});
             const preset = SAMPLE_PRESETS.find((s) => s.id === activeSampleId);
-            setParams(preset ? preset.recommendedParams : DEFAULT_PARAMS);
+            const resetParams: VectorizerParams = {
+              ...(preset ? preset.recommendedParams : DEFAULT_PARAMS),
+              manualErases: [],
+              manualEraseTolerance: 18,
+            };
+            setParams(resetParams);
+            commitHistorySnapshot(
+              resetParams,
+              {},
+              'Khôi phục mặc định (Reset)',
+              true
+            );
           }}
         />
 
@@ -576,12 +955,38 @@ export const App: React.FC = () => {
             isProcessing={isProcessing}
             processingKey={processingKey}
             removeBackground={Boolean(params.removeBackground)}
+            isEraserMode={isEraserMode}
+            manualEraseTolerance={params.manualEraseTolerance ?? 18}
+            manualEraseCount={params.manualErases?.length ?? 0}
+            canUndo={canUndo}
+            canRedo={canRedo}
             onToggleRemoveBackground={() =>
+              setParams((prev) => {
+                const next: VectorizerParams = {
+                  ...prev,
+                  removeBackground: !prev.removeBackground,
+                };
+                commitHistorySnapshot(
+                  next,
+                  paletteOverrides,
+                  next.removeBackground
+                    ? 'Bật bỏ nền tự động'
+                    : 'Tắt bỏ nền tự động',
+                  true
+                );
+                return next;
+              })
+            }
+            onToggleEraserMode={() => setIsEraserMode((prev) => !prev)}
+            onChangeManualEraseTolerance={(val) =>
               setParams((prev) => ({
                 ...prev,
-                removeBackground: !prev.removeBackground,
+                manualEraseTolerance: val,
               }))
             }
+            onEraseAtPoint={handleEraseAtPoint}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
             onChangeStage={setViewStage}
           />
 
@@ -592,7 +997,15 @@ export const App: React.FC = () => {
               onToggleVisibility={handleToggleVisibility}
               onChangeCustomColor={handleChangeCustomColor}
               onMergeColor={handleMergeColor}
-              onResetOverrides={() => setPaletteOverrides({})}
+              onResetOverrides={() => {
+                setPaletteOverrides({});
+                commitHistorySnapshot(
+                  params,
+                  {},
+                  'Khôi phục bảng màu gốc',
+                  true
+                );
+              }}
             />
           )}
         </div>
@@ -623,7 +1036,7 @@ export const App: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowSvgCodeModal(false)}
-                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>

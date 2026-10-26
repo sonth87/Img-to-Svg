@@ -7,8 +7,13 @@ import {
   MoveHorizontal,
   Sparkles,
   Eraser,
+  MousePointerClick,
+  Undo2,
+  Redo2,
+  X,
 } from 'lucide-react';
 import { PipelineResult, ViewStage } from '../types/vectorizer';
+import { InfoTooltip } from './InfoTooltip';
 
 interface ViewportCanvasProps {
   originalDataUrl: string | null;
@@ -18,17 +23,51 @@ interface ViewportCanvasProps {
   isProcessing: boolean;
   processingKey: number;
   removeBackground: boolean;
+  isEraserMode: boolean;
+  manualEraseTolerance: number;
+  manualEraseCount: number;
+  canUndo: boolean;
+  canRedo: boolean;
   onToggleRemoveBackground: () => void;
+  onToggleEraserMode: () => void;
+  onChangeManualEraseTolerance: (val: number) => void;
+  onEraseAtPoint: (x: number, y: number) => void;
+  onUndo: () => void;
+  onRedo: () => void;
   onChangeStage: (stage: ViewStage) => void;
 }
 
-const STAGE_TABS: { id: ViewStage; label: string; badge?: string }[] = [
-  { id: 'split', label: 'So Sánh Trực Tiếp', badge: 'Before / After' },
-  { id: 'original', label: 'Ảnh Gốc', badge: 'Raster' },
-  { id: 'smoothed', label: 'B1: Làm Phẳng', badge: 'Bilateral' },
-  { id: 'quantized', label: 'B2+3: Gom Màu & Lọc Đốm', badge: 'K-Means' },
-  { id: 'svg', label: 'B4+5: Kết Quả SVG', badge: 'Vector' },
-  { id: 'wireframe', label: 'Khung Dây & Điểm Neo', badge: 'Nodes' },
+const STAGE_TABS: { id: ViewStage; label: string; tip: string }[] = [
+  {
+    id: 'split',
+    label: 'So Sánh',
+    tip: 'Kéo thanh trượt để so sánh trực tiếp Ảnh Gốc (trái) và Vector SVG (phải).',
+  },
+  {
+    id: 'original',
+    label: 'Ảnh Gốc',
+    tip: 'Hiển thị ảnh Raster gốc ban đầu.',
+  },
+  {
+    id: 'smoothed',
+    label: 'B1: Làm Phẳng',
+    tip: 'Kết quả sau Bước 1: Lọc Bilateral giữ cạnh & khử viền răng cưa.',
+  },
+  {
+    id: 'quantized',
+    label: 'B2-3: Phân Cụm',
+    tip: 'Kết quả sau Bước 2 & 3: Gom cụm màu K-Means++, tách nền và lọc đốm.',
+  },
+  {
+    id: 'svg',
+    label: 'B4-5: Vector SVG',
+    tip: 'Kết quả Vector SVG hoàn chỉnh.',
+  },
+  {
+    id: 'wireframe',
+    label: 'Khung Dây',
+    tip: 'Hiển thị khung dây đường dẫn (Path) và các điểm neo Bézier (Nodes).',
+  },
 ];
 
 export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
@@ -39,7 +78,17 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   isProcessing,
   processingKey,
   removeBackground,
+  isEraserMode,
+  manualEraseTolerance,
+  manualEraseCount,
+  canUndo,
+  canRedo,
   onToggleRemoveBackground,
+  onToggleEraserMode,
+  onChangeManualEraseTolerance,
+  onEraseAtPoint,
+  onUndo,
+  onRedo,
   onChangeStage,
 }) => {
   const [zoom, setZoom] = useState<number>(1);
@@ -51,6 +100,15 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   const [splitPercent, setSplitPercent] = useState(50);
   const [showNodesInWireframe, setShowNodesInWireframe] = useState(true);
   const [showShimmer, setShowShimmer] = useState(false);
+  const [hoverImgCoords, setHoverImgCoords] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [clickRipple, setClickRipple] = useState<{
+    x: number;
+    y: number;
+    key: number;
+  } | null>(null);
 
   const viewStateRef = useRef<{ zoom: number; pan: { x: number; y: number } }>({
     zoom: 1,
@@ -58,17 +116,18 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   });
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const pointerDownClientRef = useRef<{ x: number; y: number } | null>(null);
+  const movedDuringPointerRef = useRef<boolean>(false);
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const smoothedCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const quantizedCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const shimmerStartRef = useRef<number>(0);
 
-  // Đồng bộ viewStateRef khi state zoom/pan thay đổi
   useEffect(() => {
     viewStateRef.current = { zoom, pan };
   }, [zoom, pan]);
 
-  // Xử lý lăn chuột / Pinch-to-zoom tại đúng vị trí con trỏ chuột (Zoom-to-Cursor)
+  // Zoom tại đúng vị trí con trỏ chuột (Zoom-to-Cursor)
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -79,7 +138,6 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       if (rect.width <= 0 || rect.height <= 0) return;
 
       const { zoom: oldZoom, pan: oldPan } = viewStateRef.current;
-      // Hệ số phóng mượt mà theo biên độ lăn chuột hoặc cử chỉ Trackpad
       const intensity = e.ctrlKey ? 0.012 : 0.0018;
       const rawStep = -e.deltaY * intensity;
       const factor =
@@ -95,13 +153,11 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       );
       if (newZoom === oldZoom) return;
 
-      // Tọa độ chuột tính từ tâm khung nhìn (do splitContainerRef có transformOrigin: 'center center' và căn giữa)
       const cx = rect.left + rect.width * 0.5;
       const cy = rect.top + rect.height * 0.5;
       const mx = e.clientX - cx;
       const my = e.clientY - cy;
 
-      // Giữ điểm ảnh ngay dưới mũi tên chuột đứng yên tại (mx, my) sau khi đổi tỷ lệ zoom
       const scaleRatio = newZoom / oldZoom;
       const newPan = {
         x: mx - (mx - oldPan.x) * scaleRatio,
@@ -117,8 +173,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     return () => el.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // Duy trì hiệu ứng óng ánh (ChatGPT / Gemini Shimmer) suốt thời gian Worker đang chạy
-  // và tối thiểu 420ms để mắt người luôn cảm nhận được luồng ánh sáng quét qua mượt mà
+  // Duy trì hiệu ứng óng ánh (Shimmer) tối thiểu 420ms
   useEffect(() => {
     if (isProcessing) {
       shimmerStartRef.current = performance.now();
@@ -171,6 +226,21 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     }
   }, [result, viewStage]);
 
+  const w = result?.width || 520;
+  const h = result?.height || 520;
+
+  const clientToImageCoords = (
+    clientX: number,
+    clientY: number
+  ): { x: number; y: number } | null => {
+    const box = splitContainerRef.current?.getBoundingClientRect();
+    if (!box || box.width <= 0 || box.height <= 0) return null;
+    const ix = Math.floor(((clientX - box.left) / box.width) * w);
+    const iy = Math.floor(((clientY - box.top) / box.height) * h);
+    if (ix < 0 || ix >= w || iy < 0 || iy >= h) return null;
+    return { x: ix, y: iy };
+  };
+
   const handleResetView = () => {
     const initial = { zoom: 1, pan: { x: 0, y: 0 } };
     viewStateRef.current = initial;
@@ -195,28 +265,71 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest('[data-split-handle="true"], button, input')) return;
+    if (
+      target.closest(
+        '[data-split-handle="true"], [data-floating-bar="true"], button, input, label'
+      )
+    ) {
+      return;
+    }
 
-    setIsPanning(true);
+    pointerDownClientRef.current = { x: e.clientX, y: e.clientY };
+    movedDuringPointerRef.current = false;
     panStartRef.current = {
       x: e.clientX - viewStateRef.current.pan.x,
       y: e.clientY - viewStateRef.current.pan.y,
     };
+    if (!isEraserMode) {
+      setIsPanning(true);
+    }
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPanning || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
-    const nextPan = {
-      x: e.clientX - panStartRef.current.x,
-      y: e.clientY - panStartRef.current.y,
-    };
-    viewStateRef.current = { zoom: viewStateRef.current.zoom, pan: nextPan };
-    setPan(nextPan);
+    if (isEraserMode) {
+      setHoverImgCoords(clientToImageCoords(e.clientX, e.clientY));
+    }
+
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+
+    if (pointerDownClientRef.current) {
+      const dist = Math.hypot(
+        e.clientX - pointerDownClientRef.current.x,
+        e.clientY - pointerDownClientRef.current.y
+      );
+      if (dist >= 5) {
+        movedDuringPointerRef.current = true;
+        if (!isPanning) setIsPanning(true);
+      }
+    }
+
+    if (!isEraserMode || movedDuringPointerRef.current) {
+      const nextPan = {
+        x: e.clientX - panStartRef.current.x,
+        y: e.clientY - panStartRef.current.y,
+      };
+      viewStateRef.current = { zoom: viewStateRef.current.zoom, pan: nextPan };
+      setPan(nextPan);
+    }
   };
 
-  const handleViewportPointerUp = () => {
+  const handleViewportPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const wasMoved = movedDuringPointerRef.current;
+    const downPos = pointerDownClientRef.current;
+    pointerDownClientRef.current = null;
+    movedDuringPointerRef.current = false;
     setIsPanning(false);
+
+    if (isEraserMode && !wasMoved && downPos) {
+      const coords = clientToImageCoords(e.clientX, e.clientY);
+      if (coords) {
+        setClickRipple({ x: coords.x, y: coords.y, key: Date.now() });
+        if (viewStage === 'original') {
+          onChangeStage('split');
+        }
+        onEraseAtPoint(coords.x, coords.y);
+      }
+    }
   };
 
   const updateSplitFromClientX = (clientX: number) => {
@@ -243,13 +356,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     updateSplitFromClientX(e.clientX);
   };
 
-  const w = result?.width || 520;
-  const h = result?.height || 520;
-
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full bg-slate-100 dark:bg-slate-950 transition-colors">
-      {/* Thanh chọn bước trực quan */}
-      <div className="px-4 py-2 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap transition-colors">
+      {/* Thanh công cụ & chọn bước tinh gọn */}
+      <div className="px-3 py-1.5 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap transition-colors">
         <div className="flex items-center gap-1 overflow-x-auto py-0.5">
           {STAGE_TABS.map((tab) => {
             const active = viewStage === tab.id;
@@ -258,48 +368,39 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 key={tab.id}
                 type="button"
                 onClick={() => onChangeStage(tab.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition shrink-0 ${
+                title={tab.tip}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition shrink-0 cursor-pointer ${
                   active
                     ? 'bg-indigo-600 text-white shadow-sm'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/80'
                 }`}
               >
-                <span>{tab.label}</span>
-                {tab.badge && (
-                  <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
-                      active
-                        ? 'bg-indigo-800/80 text-indigo-100'
-                        : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    {tab.badge}
-                  </span>
-                )}
+                {tab.label}
               </button>
             );
           })}
         </div>
 
-        {/* Công cụ Zoom & Nền Checkerboard */}
+        {/* Công cụ Xóa nền, Nền Caro & Zoom */}
         <div className="flex items-center gap-1.5 shrink-0">
           {viewStage === 'wireframe' && (
-            <label className="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 rounded-md cursor-pointer mr-1">
+            <label className="flex items-center gap-1 text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 px-2 py-1 rounded-md cursor-pointer">
               <input
                 type="checkbox"
                 checked={showNodesInWireframe}
                 onChange={(e) => setShowNodesInWireframe(e.target.checked)}
                 className="accent-indigo-600 dark:accent-indigo-500"
               />
-              Hiện điểm neo (Nodes)
+              <span>Nodes</span>
             </label>
           )}
 
+          {/* Nút Bỏ Nền Tự Động */}
           <button
             type="button"
             onClick={onToggleRemoveBackground}
-            title="Tự động bỏ màu nền (Background) mà không ảnh hưởng tới các chi tiết SVG bên trong"
-            className={`px-2.5 py-1.5 rounded-md transition flex items-center gap-1.5 text-xs font-medium cursor-pointer border ${
+            title="Tự động tách bỏ màu nền bên ngoài mà vẫn giữ nguyên 100% màu bên trong nhân vật"
+            className={`px-2.5 py-1 rounded-md transition flex items-center gap-1 text-xs font-medium cursor-pointer border ${
               removeBackground
                 ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
                 : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700/80 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
@@ -312,7 +413,39 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   : 'text-emerald-600 dark:text-emerald-400'
               }`}
             />
-            <span>{removeBackground ? 'Đã Bỏ Nền' : 'Bỏ Màu Nền'}</span>
+            <span>{removeBackground ? 'Đã Bỏ Nền' : 'Bỏ Nền Tự Động'}</span>
+          </button>
+
+          {/* Nút Xóa Vùng Chủ Động (Click chuột) */}
+          <button
+            type="button"
+            onClick={onToggleEraserMode}
+            title="Xóa vùng chủ động (Phím E): Đổi con trỏ sang tâm ngắm — Click vào đâu trên ảnh sẽ xóa mảng màu tại đó"
+            className={`px-2.5 py-1 rounded-md transition flex items-center gap-1 text-xs font-medium cursor-pointer border ${
+              isEraserMode
+                ? 'bg-rose-600 text-white border-rose-500 shadow-sm ring-2 ring-rose-400/40'
+                : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700/80 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            <MousePointerClick
+              className={`w-3.5 h-3.5 ${
+                isEraserMode
+                  ? 'text-white'
+                  : 'text-rose-600 dark:text-rose-400'
+              }`}
+            />
+            <span>Xóa Chủ Động</span>
+            {manualEraseCount > 0 && (
+              <span
+                className={`text-[10px] font-mono px-1 rounded ${
+                  isEraserMode
+                    ? 'bg-rose-800 text-white'
+                    : 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                }`}
+              >
+                {manualEraseCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -328,30 +461,33 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   : 'light'
               )
             }
-            title="Đổi màu nền lưới Caro (Sáng/Tối) để kiểm tra vùng trong suốt"
-            className="px-2 py-1.5 rounded-md bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition flex items-center gap-1 text-xs"
+            title="Đổi màu nền lưới Caro (Sáng/Tối)"
+            className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
           >
             <Grid className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-            <span className="hidden sm:inline">Nền Caro</span>
           </button>
 
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-md px-1">
             <button
               type="button"
               onClick={() => handleStepZoom(1 / 1.25)}
-              className="p-1 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white"
+              className="p-1 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white cursor-pointer"
               title="Thu nhỏ"
             >
               <ZoomOut className="w-3.5 h-3.5" />
             </button>
-            <span className="text-xs font-mono text-slate-800 dark:text-slate-200 px-2 min-w-[52px] text-center">
+            <span
+              onClick={handleResetView}
+              title="Bấm để về 100% (Lăn chuột để Zoom tại vị trí con trỏ)"
+              className="text-xs font-mono text-slate-800 dark:text-slate-200 px-1.5 min-w-[46px] text-center cursor-pointer"
+            >
               {Math.round(zoom * 100)}%
             </span>
             <button
               type="button"
               onClick={() => handleStepZoom(1.25)}
-              className="p-1 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white"
-              title="Phóng to (Tối đa 1600%)"
+              className="p-1 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white cursor-pointer"
+              title="Phóng to"
             >
               <ZoomIn className="w-3.5 h-3.5" />
             </button>
@@ -361,7 +497,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             type="button"
             onClick={handleResetView}
             title="Căn giữa khung hình (100%)"
-            className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+            className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
@@ -375,10 +511,88 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
         onPointerMove={handleViewportPointerMove}
         onPointerUp={handleViewportPointerUp}
         onPointerCancel={handleViewportPointerUp}
+        onPointerLeave={() => setHoverImgCoords(null)}
         className={`flex-1 relative overflow-hidden flex items-center justify-center no-select-drag ${
           useLightChecker ? 'checkerboard-light' : 'checkerboard'
-        } ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+        } ${
+          isPanning
+            ? 'cursor-grabbing'
+            : isEraserMode
+            ? 'cursor-crosshair'
+            : 'cursor-grab'
+        }`}
       >
+        {/* Thanh điều khiển nổi khi bật Chế độ Xóa Chủ Động */}
+        {isEraserMode && (
+          <div
+            data-floating-bar="true"
+            onPointerDown={(e) => e.stopPropagation()}
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-full bg-slate-900/90 dark:bg-slate-900/95 text-white border border-rose-500/50 shadow-xl backdrop-blur-md flex items-center gap-3 text-xs"
+          >
+            <span className="flex items-center gap-1.5 font-semibold text-rose-300">
+              <MousePointerClick className="w-3.5 h-3.5 text-rose-400" />
+              <span>Click vào vùng ảnh để xóa</span>
+              {hoverImgCoords && (
+                <span className="font-mono text-[10px] text-slate-300 bg-slate-800 px-1.5 py-0.2 rounded">
+                  ({hoverImgCoords.x}, {hoverImgCoords.y})
+                </span>
+              )}
+            </span>
+
+            <div className="h-3.5 w-px bg-slate-700" />
+
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-200">
+              <span>Độ lan:</span>
+              <input
+                type="range"
+                min={0}
+                max={65}
+                step={1}
+                value={manualEraseTolerance}
+                onChange={(e) =>
+                  onChangeManualEraseTolerance(Number(e.target.value))
+                }
+                className="w-20 accent-rose-500 cursor-pointer"
+              />
+              <span className="font-mono text-rose-300 w-5 text-right">
+                {manualEraseTolerance}
+              </span>
+            </label>
+
+            <div className="h-3.5 w-px bg-slate-700" />
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={!canUndo}
+                onClick={onUndo}
+                title="Hoàn tác bước vừa xóa (Ctrl+Z / Cmd+Z)"
+                className="p-1 rounded hover:bg-slate-800 disabled:opacity-35 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled={!canRedo}
+                onClick={onRedo}
+                title="Làm lại (Ctrl+Y / Cmd+Shift+Z)"
+                className="p-1 rounded hover:bg-slate-800 disabled:opacity-35 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={onToggleEraserMode}
+              title="Thoát chế độ xóa chủ động (Esc)"
+              className="p-1 rounded-full bg-rose-600/80 hover:bg-rose-500 text-white transition cursor-pointer"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         {result && (
           <div
             ref={splitContainerRef}
@@ -388,7 +602,11 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transformOrigin: 'center center',
             }}
-            className="relative shadow-2xl ring-1 ring-slate-900/10 dark:ring-white/15 rounded-sm overflow-hidden"
+            className={`relative shadow-2xl rounded-sm overflow-hidden ${
+              isEraserMode
+                ? 'ring-2 ring-rose-500/80'
+                : 'ring-1 ring-slate-900/10 dark:ring-white/15'
+            }`}
           >
             {/* 1. Chế độ So sánh Trực tiếp (Split Before/After) */}
             {viewStage === 'split' && (
@@ -461,11 +679,11 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   </div>
                 </div>
 
-                <div className="absolute top-2.5 left-2.5 z-20 px-2 py-0.5 rounded bg-slate-900/85 text-[10px] font-semibold text-white border border-white/10 pointer-events-none">
-                  ẢNH GỐC (PIXEL)
+                <div className="absolute top-2 left-2 z-20 px-2 py-0.5 rounded bg-slate-900/80 text-[10px] font-semibold text-white border border-white/10 pointer-events-none">
+                  ẢNH GỐC
                 </div>
-                <div className="absolute top-2.5 right-2.5 z-20 px-2 py-0.5 rounded bg-indigo-950/90 text-[10px] font-semibold text-indigo-100 border border-indigo-400/30 pointer-events-none">
-                  VECTOR SVG ({result.stats.totalPaths} lớp)
+                <div className="absolute top-2 right-2 z-20 px-2 py-0.5 rounded bg-indigo-950/85 text-[10px] font-semibold text-indigo-100 border border-indigo-400/30 pointer-events-none">
+                  SVG ({result.stats.totalPaths} lớp)
                 </div>
               </>
             )}
@@ -538,7 +756,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               </svg>
             )}
 
-            {/* 6. Chế độ Khung Dây & Điểm Neo (Wireframe + Bézier Anchor Points) */}
+            {/* 6. Chế độ Khung Dây & Điểm Neo (Wireframe) */}
             {viewStage === 'wireframe' && (
               <svg
                 viewBox={`0 0 ${w} ${h}`}
@@ -551,7 +769,6 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   <g key={p.colorId}>
                     {p.isStroke ? (
                       <>
-                        {/* Bóng mờ độ dày nét thực tế */}
                         <path
                           fill="none"
                           stroke="#38BDF8"
@@ -561,7 +778,6 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                           strokeLinejoin="round"
                           d={p.d}
                         />
-                        {/* Đường tâm Nét Đơn (Centerline 1-line spine) */}
                         <path
                           fill="none"
                           stroke="#38BDF8"
@@ -615,7 +831,33 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               </svg>
             )}
 
-            {/* Lớp phủ hiệu ứng óng ánh đa sắc (ChatGPT / Gemini Shimmer Overlay) khi đang tái tạo Vector SVG */}
+            {/* Tâm ngắm trực quan & hiệu ứng vòng sóng khi Click Xóa Vùng Chủ Động */}
+            {isEraserMode && hoverImgCoords && (
+              <div
+                style={{
+                  left: hoverImgCoords.x,
+                  top: hoverImgCoords.y,
+                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                }}
+                className="absolute z-30 pointer-events-none w-6 h-6 rounded-full border-2 border-rose-500 bg-rose-500/15 shadow-[0_0_10px_rgba(244,63,94,0.8)] flex items-center justify-center"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+              </div>
+            )}
+
+            {clickRipple && (
+              <div
+                key={clickRipple.key}
+                style={{
+                  left: clickRipple.x,
+                  top: clickRipple.y,
+                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                }}
+                className="absolute z-30 pointer-events-none w-8 h-8 rounded-full border-2 border-rose-400 animate-ping"
+              />
+            )}
+
+            {/* Lớp phủ hiệu ứng óng ánh (Shimmer Overlay) */}
             {viewStage !== 'original' && (
               <div
                 aria-hidden={!showShimmer}
@@ -629,21 +871,16 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   showShimmer ? 'opacity-100' : 'opacity-0'
                 }`}
               >
-                {/* Lớp kính mờ nhẹ + cực quang đa sắc (Aurora Mesh) */}
                 <div className="absolute inset-0 backdrop-blur-[5px] bg-slate-950/15 dark:bg-slate-950/30" />
                 <div className="absolute -inset-1/3 ai-aurora-layer mix-blend-screen" />
-
-                {/* Luồng sáng ngọc trai quét chéo liên tục (Diagonal Specular Shimmer Sweep) */}
                 <div className="absolute -inset-full ai-shimmer-beam" />
-
-                {/* Viền sáng lấp lánh bao quanh vùng Vector */}
                 <div className="absolute inset-0 ring-1 ring-inset ring-white/35 dark:ring-indigo-300/30" />
               </div>
             )}
           </div>
         )}
 
-        {/* Huy hiệu trạng thái nổi kiểu Gemini / ChatGPT khi đang kiến tạo Vector */}
+        {/* Huy hiệu trạng thái nổi khi đang kiến tạo Vector */}
         {viewStage !== 'original' && (
           <div
             aria-live="polite"
@@ -653,8 +890,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 : 'opacity-0 -translate-y-2 scale-95'
             }`}
           >
-            <div className="px-3.5 py-2 rounded-full bg-slate-900/85 dark:bg-slate-900/90 backdrop-blur-md border border-indigo-400/40 shadow-[0_0_25px_rgba(99,102,241,0.45)] flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-fuchsia-400 ai-sparkle-icon shrink-0" />
+            <div className="px-3 py-1.5 rounded-full bg-slate-900/85 dark:bg-slate-900/90 backdrop-blur-md border border-indigo-400/40 shadow-[0_0_25px_rgba(99,102,241,0.45)] flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-fuchsia-400 ai-sparkle-icon shrink-0" />
               <span className="text-xs font-semibold bg-gradient-to-r from-indigo-200 via-fuchsia-200 to-sky-200 bg-clip-text text-transparent">
                 Đang kiến tạo Vector SVG...
               </span>
@@ -662,21 +899,26 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
           </div>
         )}
 
-        {/* Chú thích nổi cho chế độ Wireframe */}
+        {/* Chú thích gọn gàng cho chế độ Wireframe */}
         {viewStage === 'wireframe' && (
-          <div className="absolute bottom-3 left-4 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-lg px-3 py-2 text-xs flex items-center gap-4 shadow-lg pointer-events-none flex-wrap">
-            <span className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block border border-slate-950" />
-              Điểm uốn cong Bézier (Smooth Node)
+          <div className="absolute bottom-3 left-4 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-lg px-2.5 py-1.5 text-[11px] flex items-center gap-3 shadow-lg">
+            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-200">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+              Smooth Node
             </span>
-            <span className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
-              <span className="w-2.5 h-2.5 bg-amber-500 inline-block border border-slate-950" />
-              Đỉnh góc nhọn / Đầu mút (Corner Node)
+            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-200">
+              <span className="w-2 h-2 bg-amber-500 inline-block" />
+              Corner Node
             </span>
-            <span className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
-              <span className="w-4 h-0.5 bg-sky-400 inline-block" />
-              Đường tâm Nét Đơn (Centerline Stroke)
+            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-200">
+              <span className="w-3 h-0.5 bg-sky-400 inline-block" />
+              1-Line Spine
             </span>
+            <InfoTooltip
+              side="top"
+              title="Chú thích Khung Dây (Wireframe)"
+              content="Chấm tròn xanh là điểm uốn cong mượt Bézier. Ô vuông vàng là đỉnh góc nhọn. Đường xanh dương là trục tâm của nét đơn Centerline."
+            />
           </div>
         )}
       </div>
