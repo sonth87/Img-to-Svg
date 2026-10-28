@@ -1,6 +1,11 @@
 export type VectorizeMode = 'color' | 'cartoon' | 'centerline' | 'monochrome';
 export type LayerStackMode = 'stacked' | 'cutout';
 export type CurveFitterMode = 'optimal' | 'legacy';
+/** 'vector' = dò vector thuần; 'embedded' = nhúng nguyên ảnh gốc vào file SVG (zoom giống hệt ảnh gốc, không chỉnh được từng vùng) */
+export type SvgOutputFormat = 'vector' | 'embedded';
+/** Cạnh dài tối đa (px) của ảnh đem đi dò vector; 0 = độ phân giải gốc (giới hạn MAX_ORIGINAL_PROCESSING_DIMENSION) */
+export type ProcessingResolution = 1024 | 2048 | 0;
+export const MAX_ORIGINAL_PROCESSING_DIMENSION = 2560;
 export type ViewStage =
   | 'split'
   | 'original'
@@ -47,6 +52,10 @@ export interface VectorizerParams {
   curveSmoothing: number;
   /** Bước 5d: Thuật toán khớp đường cong ('optimal' = đa giác tối ưu kiểu Potrace, 'legacy' = RDP + Bézier cũ). Mặc định 'optimal' */
   curveFitter?: CurveFitterMode;
+  /** Độ phân giải xử lý (cạnh dài tối đa). Mặc định 1024 */
+  processingResolution?: ProcessingResolution;
+  /** Kiểu file SVG đầu ra. Mặc định 'vector' */
+  outputFormat?: SvgOutputFormat;
   /** Tự động tách bỏ màu nền (Background Removal) mà không làm thay đổi cấu trúc vector bên trong vật thể */
   removeBackground?: boolean;
   /** Độ nhạy gom các sắc độ màu nền tương đồng từ viền ảnh (5..80, mặc định 24) */

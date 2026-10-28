@@ -786,12 +786,41 @@ export function optimalCurveOptionsFromParams(
   };
 }
 
+/** Đa giác đúng biên pixel (chỉ gộp các điểm thẳng hàng) cho vùng quá mỏng để làm mượt an toàn */
+function exactPixelPolygon(points: Point2D[]): { subpath: string; anchors: AnchorPoint[] } {
+  const n = points.length;
+  const kept: Point2D[] = [];
+  for (let k = 0; k < n; k++) {
+    const prev = points[(k - 1 + n) % n];
+    const cur = points[k];
+    const next = points[(k + 1) % n];
+    if (cross(cur.x - prev.x, cur.y - prev.y, next.x - cur.x, next.y - cur.y) !== 0) kept.push(cur);
+  }
+  if (kept.length < 3) return { subpath: '', anchors: [] };
+  let d = `M${fmt(kept[0].x)} ${fmt(kept[0].y)}`;
+  for (let k = 1; k < kept.length; k++) d += `L${fmt(kept[k].x)} ${fmt(kept[k].y)}`;
+  return {
+    subpath: d + 'Z',
+    anchors: kept.map((p) => ({ x: p.x, y: p.y, isCorner: true })),
+  };
+}
+
 export function buildOptimalCurvePathsFromLayers(
   layers: TracedLayerContours[],
   simplifyTolerance: number,
   cornerThreshold: number
 ): VectorPathData[] {
   const opts = optimalCurveOptionsFromParams(simplifyTolerance, cornerThreshold);
+  // Vùng tí hon (<= 3px) mà làm mượt thì thành chấm tròn rời rạc, hở nền giữa các chấm
+  // -> giữ đa giác góc cạnh để các mảnh khít vào nhau như mosaic.
+  const tinyOpts: OptimalCurveOptions = { ...opts, alphaMax: -1 };
+  // Ảnh nhiều màu (ảnh chụp, render 3D): hàng trăm nghìn vùng mỏng 1-3px đan xen. Làm mượt độc lập từng vùng
+  // lệch ±0.5px = phình 30-50% bề rộng vùng, vùng vẽ sau (điểm sáng, rãnh tối) đè mất chi tiết xung quanh.
+  // -> vùng mỏng (bề dày trung bình 2·S/P < 3px) giữ đúng biên pixel, chỉ vùng đủ dày mới làm mượt.
+  const exactThinRegions = layers.length > 16 || simplifyTolerance <= 0.55;
+  // Rất nhiều màu (> 64): mọi vùng đều là mảnh vá cỡ pixel của một ảnh chuyển màu liên tục; bất kỳ độ lệch biên nào
+  // (kể cả làm mượt vùng dày) cũng cộng dồn thành mất chi tiết -> giữ đúng biên pixel cho tất cả.
+  const exactAllRegions = layers.length > 64;
   const vectorPaths: VectorPathData[] = [];
 
   for (const layer of layers) {
@@ -800,7 +829,35 @@ export function buildOptimalCurvePathsFromLayers(
     let nodeCount = 0;
 
     for (const rawContour of layer.contours) {
-      const { subpath, anchors } = fitOptimalCurve(rawContour, true, opts);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const p of rawContour) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const isTiny = Math.max(maxX - minX, maxY - minY) <= 3;
+      let isThin = false;
+      if (exactThinRegions) {
+        let area2 = 0;
+        let perimeter = 0;
+        for (let k = 0, j = rawContour.length - 1; k < rawContour.length; j = k++) {
+          area2 += rawContour[j].x * rawContour[k].y - rawContour[k].x * rawContour[j].y;
+          perimeter += Math.abs(rawContour[k].x - rawContour[j].x) + Math.abs(rawContour[k].y - rawContour[j].y);
+        }
+        isThin = Math.abs(area2) / Math.max(1, perimeter) < 1.5;
+      }
+      const { subpath, anchors } =
+        exactAllRegions
+          ? exactPixelPolygon(rawContour)
+          : isTiny || isThin
+          ? exactThinRegions
+            ? exactPixelPolygon(rawContour)
+            : fitOptimalCurve(rawContour, true, tinyOpts)
+          : fitOptimalCurve(rawContour, true, opts);
       if (subpath) {
         subpaths.push(subpath);
         nodeCount += anchors.length;

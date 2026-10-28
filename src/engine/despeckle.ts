@@ -221,8 +221,18 @@ export function applyPaletteOverridesAndDespeckle(
             }
           }
 
+          // Bảng màu dày (ảnh chụp, render 3D): đốm 1-3px tương phản mạnh chính là kết cấu thật (vân chạm, điểm sáng)
+          // -> chỉ hòa đốm gần màu với lân cận; nhập bừa sẽ xóa kết cấu & trôi màu dây chuyền (sai số tăng ~3 lần).
+          const bestCol = palette[bestNeighborLabel];
+          const bestDist = Math.sqrt(
+            (baseCol.r - bestCol.r) ** 2 +
+              (baseCol.g - bestCol.g) ** 2 +
+              (baseCol.b - bestCol.b) ** 2
+          );
+          const isRealDetail = numColors > 64 && bestDist > 12;
+
           // Cập nhật trực tiếp tại chỗ (in-place) để 2 đốm nhiễu cạnh nhau không bao giờ tráo đổi màu cho nhau!
-          for (let i = 0; i < tail; i++) {
+          for (let i = 0; i < tail && !isRealDetail; i++) {
             cleanedLabelMap[queue[i]] = bestNeighborLabel;
           }
         }

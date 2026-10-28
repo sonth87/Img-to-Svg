@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Upload,
   Download,
@@ -16,11 +16,13 @@ import {
   Trash2,
 } from 'lucide-react';
 import {
+  MAX_ORIGINAL_PROCESSING_DIMENSION,
   PaletteOverride,
   PipelineResult,
   VectorizerParams,
   ViewStage,
 } from './types/vectorizer';
+import { buildEmbeddedImageSvg } from './engine/svgBuilder';
 import { DEFAULT_PARAMS, SAMPLE_PRESETS } from './engine/sampleImages';
 import { ControlPanel } from './components/ControlPanel';
 import { ViewportCanvas } from './components/ViewportCanvas';
@@ -28,7 +30,25 @@ import { PaletteManager } from './components/PaletteManager';
 import { InfoTooltip } from './components/InfoTooltip';
 import VectorizerWorker from './engine/worker?worker';
 
-const MAX_PROCESSING_DIMENSION = 1024;
+const DEFAULT_PROCESSING_DIMENSION = 1024;
+
+/** Kích thước ảnh đem đi dò vector theo tùy chọn "Độ phân giải xử lý" (0 = ảnh gốc, có giới hạn trên) */
+function fitProcessingDims(
+  naturalW: number,
+  naturalH: number,
+  resolution: VectorizerParams['processingResolution']
+): { w: number; h: number } {
+  const maxDim =
+    resolution === 0
+      ? MAX_ORIGINAL_PROCESSING_DIMENSION
+      : resolution ?? DEFAULT_PROCESSING_DIMENSION;
+  if (naturalW <= maxDim && naturalH <= maxDim) return { w: naturalW, h: naturalH };
+  const scale = maxDim / Math.max(naturalW, naturalH);
+  return {
+    w: Math.max(16, Math.round(naturalW * scale)),
+    h: Math.max(16, Math.round(naturalH * scale)),
+  };
+}
 const MAX_HISTORY_ENTRIES = 40;
 
 interface HistoryEntry {
@@ -120,7 +140,34 @@ export const App: React.FC = () => {
   const workerRef = useRef<Worker | null>(null);
   const jobIdRef = useRef<number>(0);
   const lastRenderedJobIdRef = useRef<number>(0);
-  const needsPixelTransferRef = useRef<boolean>(false);
+  // Mảng pixel worker đang giữ: gửi lại khi ảnh nguồn đổi (tải ảnh mới / đổi độ phân giải xử lý)
+  const sentPixelsRef = useRef<Uint8ClampedArray | null>(null);
+  // Ảnh người dùng tải lên ở độ phân giải gốc: vẽ lại khi đổi "Độ phân giải xử lý" & nhúng vào SVG khi xuất
+  const sourceImageRef = useRef<HTMLImageElement | null>(null);
+  const [embedSourceUrl, setEmbedSourceUrl] = useState<string | null>(null);
+  const processingResolutionRef = useRef(params.processingResolution);
+  processingResolutionRef.current = params.processingResolution;
+
+  const rasterizeSource = useCallback(
+    (img: HTMLImageElement, resolution: VectorizerParams['processingResolution']) => {
+      const { w, h } = fitProcessingDims(
+        img.naturalWidth || img.width,
+        img.naturalHeight || img.height,
+        resolution
+      );
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, w, h);
+      const imgData = ctx.getImageData(0, 0, w, h);
+
+      setOriginalDataUrl(canvas.toDataURL('image/png'));
+      setSourceImageInfo({ width: w, height: h, pixels: imgData.data });
+    },
+    []
+  );
   const workerBusyRef = useRef<boolean>(false);
   const pendingPayloadRef = useRef<{
     jobId: number;
@@ -378,7 +425,8 @@ export const App: React.FC = () => {
     const dataUrl = canvas.toDataURL('image/png');
     const imgData = ctx.getImageData(0, 0, w, h);
 
-    needsPixelTransferRef.current = true;
+    sourceImageRef.current = null;
+    setEmbedSourceUrl(dataUrl);
     setOriginalDataUrl(dataUrl);
     setSourceImageInfo({
       width: w,
@@ -386,6 +434,13 @@ export const App: React.FC = () => {
       pixels: imgData.data,
     });
   }, []);
+
+  // Đổi độ phân giải xử lý (thanh tùy chọn, preset, hoàn tác) -> vẽ lại ảnh gốc ở kích thước mới
+  useEffect(() => {
+    const img = sourceImageRef.current;
+    if (!img) return;
+    rasterizeSource(img, params.processingResolution);
+  }, [params.processingResolution, rasterizeSource]);
 
   // Xử lý file ảnh người dùng tải lên
   const handleFileSelected = useCallback((file: File) => {
@@ -395,25 +450,8 @@ export const App: React.FC = () => {
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-
-        if (w > MAX_PROCESSING_DIMENSION || h > MAX_PROCESSING_DIMENSION) {
-          const scale = MAX_PROCESSING_DIMENSION / Math.max(w, h);
-          w = Math.max(16, Math.round(w * scale));
-          h = Math.max(16, Math.round(h * scale));
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        ctx.drawImage(img, 0, 0, w, h);
-        const imgData = ctx.getImageData(0, 0, w, h);
-
-        needsPixelTransferRef.current = true;
+        sourceImageRef.current = img;
+        setEmbedSourceUrl(reader.result as string);
         const imgName = file.name || 'Ảnh dán từ Clipboard';
         setActiveSampleId('custom');
         setCurrentImageName(imgName);
@@ -437,17 +475,12 @@ export const App: React.FC = () => {
           return freshParams;
         });
 
-        setOriginalDataUrl(canvas.toDataURL('image/png'));
-        setSourceImageInfo({
-          width: w,
-          height: h,
-          pixels: imgData.data,
-        });
+        rasterizeSource(img, processingResolutionRef.current);
       };
       img.src = reader.result as string;
     };
     reader.readAsDataURL(file);
-  }, []);
+  }, [rasterizeSource]);
 
   // Hỗ trợ dán ảnh trực tiếp bằng phím tắt Ctrl+V / Cmd+V
   useEffect(() => {
@@ -468,13 +501,18 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('paste', handlePaste);
   }, [handleFileSelected]);
 
+  // Kiểu file đầu ra chỉ ảnh hưởng lúc xuất SVG -> đổi nó không chạy lại pipeline
+  const { outputFormat: _outputFormat, ...pipelineParams } = params;
+  const pipelineParamsKey = JSON.stringify(pipelineParams);
+
   // Gửi công việc sang Web Worker
   useEffect(() => {
     if (!sourceImageInfo || !workerRef.current) return;
 
     const nextJobId = ++jobIdRef.current;
-    const isNewUpload = needsPixelTransferRef.current;
-    needsPixelTransferRef.current = false;
+    const isNewUpload = sentPixelsRef.current !== sourceImageInfo.pixels;
+    sentPixelsRef.current = sourceImageInfo.pixels;
+    const params = JSON.parse(pipelineParamsKey) as VectorizerParams;
 
     setIsProcessing(true);
     setProcessingKey(nextJobId);
@@ -501,7 +539,7 @@ export const App: React.FC = () => {
       workerBusyRef.current = true;
       workerRef.current.postMessage(payload);
     }
-  }, [sourceImageInfo, params, paletteOverrides]);
+  }, [sourceImageInfo, pipelineParamsKey, paletteOverrides]);
 
   // Xử lý khi người dùng click xóa vùng chủ động tại tọa độ (x, y)
   const handleEraseAtPoint = useCallback(
@@ -608,16 +646,29 @@ export const App: React.FC = () => {
     });
   };
 
+  const isEmbeddedOutput =
+    params.outputFormat === 'embedded' && Boolean(embedSourceUrl);
+  const exportSvgString = useMemo(() => {
+    if (!result) return null;
+    return isEmbeddedOutput && embedSourceUrl
+      ? buildEmbeddedImageSvg(embedSourceUrl, result.width, result.height)
+      : result.svgString;
+  }, [result, isEmbeddedOutput, embedSourceUrl]);
+  const exportSvgBytes = useMemo(
+    () => (exportSvgString ? new Blob([exportSvgString]).size : 0),
+    [exportSvgString]
+  );
+
   const handleCopySvg = async () => {
-    if (!result?.svgString) return;
-    await navigator.clipboard.writeText(result.svgString);
+    if (!exportSvgString) return;
+    await navigator.clipboard.writeText(exportSvgString);
     setCopiedSvg(true);
     setTimeout(() => setCopiedSvg(false), 2000);
   };
 
   const handleDownloadSvg = () => {
-    if (!result?.svgString) return;
-    const blob = new Blob([result.svgString], {
+    if (!exportSvgString) return;
+    const blob = new Blob([exportSvgString], {
       type: 'image/svg+xml;charset=utf-8',
     });
     const url = URL.createObjectURL(blob);
@@ -671,7 +722,7 @@ export const App: React.FC = () => {
                     <p className="font-mono text-[10px] text-indigo-300 pt-1 border-t border-slate-700">
                       Hiện tại: {result.stats.totalPaths} paths ·{' '}
                       {result.stats.totalNodes.toLocaleString()} nodes ·{' '}
-                      {(result.stats.svgBytes / 1024).toFixed(1)} KB
+                      {(exportSvgBytes / 1024).toFixed(1)} KB
                     </p>
                   )}
                 </div>
@@ -820,7 +871,7 @@ export const App: React.FC = () => {
         <div className="flex items-center gap-1.5 shrink-0">
           {result && (
             <span className="hidden lg:inline-block font-mono text-[11px] text-slate-500 dark:text-slate-400 mr-1">
-              {(result.stats.svgBytes / 1024).toFixed(1)} KB
+              {(exportSvgBytes / 1024).toFixed(1)} KB
             </span>
           )}
 
@@ -899,7 +950,29 @@ export const App: React.FC = () => {
           onUploadFile={handleFileSelected}
           onChange={(updater, actionLabel) => {
             setParams((prev) => {
-              const next = updater(prev);
+              let next = updater(prev);
+              // Điểm xóa chủ động lưu theo tọa độ ảnh xử lý -> co giãn theo độ phân giải mới
+              const img = sourceImageRef.current;
+              if (
+                img &&
+                prev.processingResolution !== next.processingResolution &&
+                next.manualErases?.length
+              ) {
+                const nw = img.naturalWidth || img.width;
+                const nh = img.naturalHeight || img.height;
+                const from = fitProcessingDims(nw, nh, prev.processingResolution);
+                const to = fitProcessingDims(nw, nh, next.processingResolution);
+                const sx = to.w / from.w;
+                const sy = to.h / from.h;
+                next = {
+                  ...next,
+                  manualErases: next.manualErases.map((pt) => ({
+                    ...pt,
+                    x: Math.min(to.w - 1, Math.floor(pt.x * sx)),
+                    y: Math.min(to.h - 1, Math.floor(pt.y * sy)),
+                  })),
+                };
+              }
               const quantChanged =
                 prev.mode !== next.mode ||
                 prev.smoothness !== next.smoothness ||
@@ -950,6 +1023,7 @@ export const App: React.FC = () => {
           <ViewportCanvas
             originalDataUrl={originalDataUrl}
             result={result}
+            embeddedImageUrl={isEmbeddedOutput ? embedSourceUrl : null}
             viewStage={viewStage}
             isDarkTheme={resolvedScheme === 'dark'}
             isProcessing={isProcessing}
@@ -1029,8 +1103,14 @@ export const App: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Code2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                 <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Mã nguồn Vector SVG ({result.stats.totalPaths} thẻ &lt;path&gt;,{' '}
-                  {result.stats.totalNodes} điểm neo Bézier)
+                  {isEmbeddedOutput ? (
+                    'Mã nguồn SVG (nhúng ảnh gốc)'
+                  ) : (
+                    <>
+                      Mã nguồn Vector SVG ({result.stats.totalPaths} thẻ
+                      &lt;path&gt;, {result.stats.totalNodes} điểm neo Bézier)
+                    </>
+                  )}
                 </h3>
               </div>
               <button
@@ -1043,7 +1123,9 @@ export const App: React.FC = () => {
             </div>
             <div className="p-4 flex-1 overflow-auto bg-slate-950 font-mono text-xs text-slate-200">
               <pre className="whitespace-pre-wrap break-all select-all">
-                {result.svgString}
+                {isEmbeddedOutput
+                  ? exportSvgString?.replace(/(data:[^"]{80})[^"]*/g, '$1…')
+                  : result.svgString}
               </pre>
             </div>
           </div>

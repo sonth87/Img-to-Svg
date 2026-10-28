@@ -14,10 +14,13 @@ import {
 } from 'lucide-react';
 import { PipelineResult, ViewStage } from '../types/vectorizer';
 import { InfoTooltip } from './InfoTooltip';
+import { getSeamStrokeWidth } from '../engine/svgBuilder';
 
 interface ViewportCanvasProps {
   originalDataUrl: string | null;
   result: PipelineResult | null;
+  /** Chế độ đầu ra "Nhúng ảnh gốc": ảnh hiển thị ở khung SVG thay cho các lớp vector */
+  embeddedImageUrl?: string | null;
   viewStage: ViewStage;
   isDarkTheme: boolean;
   isProcessing: boolean;
@@ -73,6 +76,7 @@ const STAGE_TABS: { id: ViewStage; label: string; tip: string }[] = [
 export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   originalDataUrl,
   result,
+  embeddedImageUrl,
   viewStage,
   isDarkTheme,
   isProcessing,
@@ -228,6 +232,11 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
 
   const w = result?.width || 520;
   const h = result?.height || 520;
+  // Ảnh xử lý ở độ phân giải cao vẫn hiển thị cùng khổ như ảnh 1024px để mức zoom % không đổi ý nghĩa
+  const displayScale = Math.min(1, 1024 / Math.max(w, h));
+  const displayW = Math.round(w * displayScale);
+  const displayH = Math.round(h * displayScale);
+  const seamWidth = result ? getSeamStrokeWidth(result.paths.length) : 0;
 
   const clientToImageCoords = (
     clientX: number,
@@ -597,8 +606,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
           <div
             ref={splitContainerRef}
             style={{
-              width: w,
-              height: h,
+              width: displayW,
+              height: displayH,
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transformOrigin: 'center center',
             }}
@@ -618,7 +627,15 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   className="block w-full h-full"
                   shapeRendering="geometricPrecision"
                 >
-                  {result.paths.map((p) =>
+                  {embeddedImageUrl ? (
+                    <image
+                      href={embeddedImageUrl}
+                      width={w}
+                      height={h}
+                      preserveAspectRatio="none"
+                    />
+                  ) : null}
+                  {!embeddedImageUrl && result.paths.map((p) =>
                     p.isStroke ? (
                       <path
                         key={p.colorId}
@@ -633,14 +650,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                       <path
                         key={p.colorId}
                         fill={p.hex}
-                        stroke={result.paths.length > 16 ? p.hex : undefined}
-                        strokeWidth={result.paths.length > 16 ? 0.85 : undefined}
-                        strokeLinejoin={
-                          result.paths.length > 16 ? 'round' : undefined
-                        }
-                        strokeLinecap={
-                          result.paths.length > 16 ? 'round' : undefined
-                        }
+                        stroke={seamWidth > 0 ? p.hex : undefined}
+                        strokeWidth={seamWidth > 0 ? seamWidth : undefined}
+                        strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
+                        strokeLinecap={seamWidth > 0 ? 'round' : undefined}
                         fillRule="evenodd"
                         d={p.d}
                       />
@@ -683,7 +696,9 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   ẢNH GỐC
                 </div>
                 <div className="absolute top-2 right-2 z-20 px-2 py-0.5 rounded bg-indigo-950/85 text-[10px] font-semibold text-indigo-100 border border-indigo-400/30 pointer-events-none">
-                  SVG ({result.stats.totalPaths} lớp)
+                  {embeddedImageUrl
+                    ? 'SVG (nhúng ảnh gốc)'
+                    : `SVG (${result.stats.totalPaths} lớp)`}
                 </div>
               </>
             )}
@@ -725,7 +740,15 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 className="block w-full h-full"
                 shapeRendering="geometricPrecision"
               >
-                {result.paths.map((p) =>
+                {embeddedImageUrl ? (
+                  <image
+                    href={embeddedImageUrl}
+                    width={w}
+                    height={h}
+                    preserveAspectRatio="none"
+                  />
+                ) : null}
+                {!embeddedImageUrl && result.paths.map((p) =>
                   p.isStroke ? (
                     <path
                       key={p.colorId}
@@ -740,14 +763,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                     <path
                       key={p.colorId}
                       fill={p.hex}
-                      stroke={result.paths.length > 16 ? p.hex : undefined}
-                      strokeWidth={result.paths.length > 16 ? 0.85 : undefined}
-                      strokeLinejoin={
-                        result.paths.length > 16 ? 'round' : undefined
-                      }
-                      strokeLinecap={
-                        result.paths.length > 16 ? 'round' : undefined
-                      }
+                      stroke={seamWidth > 0 ? p.hex : undefined}
+                      strokeWidth={seamWidth > 0 ? seamWidth : undefined}
+                      strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
+                      strokeLinecap={seamWidth > 0 ? 'round' : undefined}
                       fillRule="evenodd"
                       d={p.d}
                     />

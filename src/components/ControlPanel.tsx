@@ -22,6 +22,7 @@ import {
   Wand2,
   MousePointerClick,
   Trash2,
+  Maximize,
 } from 'lucide-react';
 import { PipelineStats, VectorizerParams } from '../types/vectorizer';
 import { PURPOSE_PRESETS, PurposePreset } from '../engine/sampleImages';
@@ -234,6 +235,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       (prev) => ({
                         ...preset.params,
                         removeBackground: prev.removeBackground ?? false,
+                        outputFormat: prev.outputFormat ?? 'vector',
                         bgTolerance: prev.bgTolerance ?? 24,
                         manualErases: prev.manualErases ?? [],
                         manualEraseTolerance: prev.manualEraseTolerance ?? 18,
@@ -788,6 +790,17 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       toán cũ để so sánh.
                     </li>
                     <li>
+                      <strong>Kiểu file:</strong> Vector dò hình thành các mảng
+                      màu; <strong>Nhúng ảnh gốc</strong> đặt nguyên ảnh vào
+                      file SVG (zoom như ảnh gốc, nhưng không phải vector).
+                    </li>
+                    <li>
+                      <strong>Độ phân giải xử lý:</strong> Ảnh lớn được thu nhỏ
+                      trước khi dò. 2048px / Ảnh gốc giữ chi tiết nhỏ hơn khi
+                      zoom, đổi lại chậm hơn và file nặng hơn (preset Siêu Nét
+                      tự dùng 2048px).
+                    </li>
+                    <li>
                       <strong>RDP & Bézier:</strong> Điều chỉnh độ mượt và độ
                       nhọn của các điểm neo vector.
                     </li>
@@ -800,6 +813,85 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 {stats.stepTimings.tracingMs + stats.stepTimings.curveFittingMs}
                 ms
               </span>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs text-slate-600 dark:text-slate-300">
+              Kiểu file SVG
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  update('outputFormat', 'vector', 'Kiểu file SVG: Vector')
+                }
+                className={`py-1 px-2 rounded text-[11px] font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                  (params.outputFormat ?? 'vector') === 'vector' ? 'bg-indigo-600 text-white' : 'bg-slate-200/80 dark:bg-slate-800/70 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <Spline className="w-3 h-3" />
+                Vector
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  update(
+                    'outputFormat',
+                    'embedded',
+                    'Kiểu file SVG: Nhúng ảnh gốc'
+                  )
+                }
+                className={`py-1 px-2 rounded text-[11px] font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                  params.outputFormat === 'embedded' ? 'bg-indigo-600 text-white' : 'bg-slate-200/80 dark:bg-slate-800/70 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <ImageIcon className="w-3 h-3" />
+                Nhúng ảnh gốc
+              </button>
+            </div>
+            {params.outputFormat === 'embedded' ? (
+              <p className="text-[10px] leading-snug text-amber-600 dark:text-amber-400">
+                File SVG chứa nguyên ảnh gốc: zoom giống hệt ảnh gốc nhưng không
+                phải vector, không đổi màu / cắt từng vùng được. Các thông số
+                vector bên dưới không áp dụng cho file xuất.
+              </p>
+            ) : (
+              <>
+                <div className="text-xs text-slate-600 dark:text-slate-300 pt-1">
+                  Độ phân giải xử lý
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      [1024, '1024px', 'Nhanh, file nhẹ'],
+                      [2048, '2048px', 'Chi tiết gấp ~4 lần, chậm & nặng hơn'],
+                      [0, 'Ảnh gốc', 'Tối đa 2560px; rất nặng với ảnh nhiều màu'],
+                    ] as const
+                  ).map(([value, label, tip]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      title={tip}
+                      onClick={() =>
+                        update(
+                          'processingResolution',
+                          value,
+                          `Độ phân giải xử lý: ${label}`
+                        )
+                      }
+                      className={`py-1 px-1 rounded text-[11px] font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                        (params.processingResolution ?? 1024) === value
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-slate-200/80 dark:bg-slate-800/70 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {value === 0 && <Maximize className="w-3 h-3" />}
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
             )}
           </div>
 

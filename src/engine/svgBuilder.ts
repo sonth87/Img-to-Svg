@@ -1,6 +1,32 @@
 import { VectorPathData } from '../types/vectorizer';
 
 /**
+ * Bề dày viền che khe giữa các vùng màu (0 = không cần). Viền làm mỗi vùng phình ra nửa bề dày viền:
+ * ảnh rất nhiều màu (ảnh chụp, render 3D) có vô số vùng 1-3px khít nhau theo biên pixel, viền 0.85px nuốt mất
+ * 40-85% bề rộng của chúng; 0.15px đủ che khe khi zoom lẻ. Khung xem trong app dùng chung giá trị này.
+ */
+export function getSeamStrokeWidth(layerCount: number): number {
+  if (layerCount <= 16) return 0;
+  return layerCount > 64 ? 0.15 : 0.85;
+}
+
+/**
+ * SVG nhúng nguyên ảnh gốc (độ phân giải đầy đủ) trong khung tọa độ của ảnh xử lý.
+ * Zoom giống hệt ảnh gốc nhưng không còn là vector: không đổi màu / cắt từng vùng được.
+ */
+export function buildEmbeddedImageSvg(
+  imageDataUrl: string,
+  width: number,
+  height: number
+): string {
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">`,
+    `  <image width="${width}" height="${height}" preserveAspectRatio="none" href="${imageDataUrl}" xlink:href="${imageDataUrl}" />`,
+    '</svg>',
+  ].join('\n');
+}
+
+/**
  * Đóng gói danh sách các lớp đường cong `VectorPathData[]` thành chuỗi XML `<svg>` hoàn chỉnh.
  * Hỗ trợ cả lớp vùng màu đặc (`fill="..."`) và lớp nét đơn Centerline (`fill="none" stroke="..."`).
  */
@@ -13,7 +39,8 @@ export function buildSvgDocument(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" shape-rendering="geometricPrecision">`,
   ];
 
-  const useSeamSeal = paths.length > 16;
+  const seamWidth = getSeamStrokeWidth(paths.length);
+  const useSeamSeal = seamWidth > 0;
 
   for (const path of paths) {
     if (path.isStroke) {
@@ -23,7 +50,7 @@ export function buildSvgDocument(
       );
     } else if (useSeamSeal) {
       lines.push(
-        `  <path id="layer-color-${path.colorId}" fill="${path.hex}" stroke="${path.hex}" stroke-width="0.85" stroke-linejoin="round" stroke-linecap="round" fill-rule="evenodd" d="${path.d}" />`
+        `  <path id="layer-color-${path.colorId}" fill="${path.hex}" stroke="${path.hex}" stroke-width="${seamWidth}" stroke-linejoin="round" stroke-linecap="round" fill-rule="evenodd" d="${path.d}" />`
       );
     } else {
       lines.push(

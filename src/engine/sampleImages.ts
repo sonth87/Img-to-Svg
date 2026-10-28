@@ -311,7 +311,7 @@ export const PURPOSE_PRESETS: PurposePreset[] = [
       singleLineStrokes: false,
       smoothness: 0,
       colorCount: 256,
-      colorMergeDeltaE: 1,
+      colorMergeDeltaE: 2,
       monochromeThreshold: 140,
       strokeWidth: 0,
       invertMonochrome: false,
@@ -320,6 +320,7 @@ export const PURPOSE_PRESETS: PurposePreset[] = [
       simplifyTolerance: 0.2,
       cornerThreshold: 55,
       curveSmoothing: 0.45,
+      processingResolution: 2048,
     },
   },
 ];
