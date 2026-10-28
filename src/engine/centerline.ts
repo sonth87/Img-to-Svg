@@ -13,7 +13,9 @@
 
 import { AnchorPoint, VectorPathData } from '../types/vectorizer';
 import { fitCenterlineChainToBezier } from './curveFitting';
-import { Point2D } from './marchingSquares';
+import { fitOptimalCurve, optimalCurveOptionsFromParams } from './optimalCurve';
+import { Point2D, traceBinaryMaskContours } from './marchingSquares';
+import { chamferDistance } from './quantize';
 
 export function zhangSuenThinning(
   inputMask: Uint8Array,
@@ -110,31 +112,62 @@ export function zhangSuenThinning(
     if (!changed) break;
   }
 
-  // Khử các điểm chữ L thừa (Staircase removal) để khung xương chỉ nối 8-connected mượt mà
+  // Khử pixel thừa (Redundant pixel removal): bỏ pixel nếu các hàng xóm của nó vẫn liền một khối 8 hướng
+  // khi không có nó. Xử lý mọi cụm chữ L/Z/2x2 do bậc thang tạo ra (vốn bị coi nhầm là ngã ba và cắt vụn nét),
+  // trong khi đầu mút (1 hàng xóm) và ngã ba thật (hàng xóm rời nhau) được giữ nguyên.
+  const ringOff = [
+    -width, -width + 1, 1, width + 1, width, width - 1, -1, -width - 1,
+  ];
+  const ring = new Uint8Array(8);
+  const comp = new Int8Array(8);
+  const stack: number[] = [];
+  for (let pass = 0; pass < 3; pass++) {
+    let removed = 0;
+    for (let k = 0; k < activeCount; k++) {
+      const idx = activePixels[k];
+      if (skel[idx] === 0) continue;
+      let count = 0;
+      for (let r = 0; r < 8; r++) {
+        ring[r] = skel[idx + ringOff[r]];
+        count += ring[r];
+      }
+      if (count < 2) continue;
+
+      // Đếm số thành phần liên thông của vòng hàng xóm (ô liền kề trên vòng, hoặc 2 ô trực giao cách 1 góc)
+      comp.fill(-1);
+      let components = 0;
+      for (let r = 0; r < 8; r++) {
+        if (!ring[r] || comp[r] >= 0) continue;
+        components++;
+        comp[r] = 1;
+        stack.length = 0;
+        stack.push(r);
+        while (stack.length > 0) {
+          const c = stack.pop()!;
+          const nbrs =
+            c % 2 === 0 ? [c + 1, c + 7, c + 2, c + 6] : [c + 1, c + 7];
+          for (const nb of nbrs) {
+            const t = nb % 8;
+            if (ring[t] && comp[t] < 0) {
+              comp[t] = 1;
+              stack.push(t);
+            }
+          }
+        }
+        if (components > 1) break;
+      }
+
+      if (components === 1) {
+        skel[idx] = 0;
+        removed++;
+      }
+    }
+    if (removed === 0) break;
+  }
+
   let skeletonCount = 0;
   for (let k = 0; k < activeCount; k++) {
-    const idx = activePixels[k];
-    if (skel[idx] === 0) continue;
-    const n = skel[idx - width];
-    const s = skel[idx + width];
-    const e = skel[idx + 1];
-    const w = skel[idx - 1];
-    const ne = skel[idx - width + 1];
-    const nw = skel[idx - width - 1];
-    const se = skel[idx + width + 1];
-    const sw = skel[idx + width - 1];
-
-    if (n && e && !nw && !sw && !se) {
-      skel[idx] = 0;
-    } else if (n && w && !ne && !se && !sw) {
-      skel[idx] = 0;
-    } else if (s && e && !sw && !nw && !ne) {
-      skel[idx] = 0;
-    } else if (s && w && !se && !ne && !nw) {
-      skel[idx] = 0;
-    } else {
-      skeletonCount++;
-    }
+    if (skel[activePixels[k]]) skeletonCount++;
   }
 
   return { skeleton: skel, skeletonCount };
@@ -452,6 +485,174 @@ function stitchNearbyOpenChains(
   ];
 }
 
+/**
+ * Loại bỏ các mẩu khung xương vụn (ngắn hơn độ dày nét) nằm sát một nét dài hơn:
+ * thường sinh ra tại ngã ba/cụm điểm nút, khi vẽ với đầu nét tròn chúng thành các cục u bám bên nét chính.
+ * Mẩu vụn đứng riêng lẻ (chấm thật trên hình) vẫn được giữ lại.
+ */
+function removeCoveredStubChains(
+  chains: { points: Point2D[]; isClosed: boolean }[],
+  strokeWidth: number
+): { points: Point2D[]; isClosed: boolean }[] {
+  const polyLength = (pts: Point2D[]) => {
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) {
+      len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    }
+    return len;
+  };
+
+  const lengths = chains.map((c) => polyLength(c.points));
+  const cellSize = Math.max(2, Math.ceil(strokeWidth));
+  const grid = new Map<number, number[]>();
+  const keyOf = (gx: number, gy: number) => (gy << 16) ^ gx;
+
+  chains.forEach((c, ci) => {
+    if (!c.isClosed && lengths[ci] < strokeWidth) return;
+    for (const p of c.points) {
+      const key = keyOf(Math.floor(p.x / cellSize), Math.floor(p.y / cellSize));
+      let bucket = grid.get(key);
+      if (!bucket) {
+        bucket = [];
+        grid.set(key, bucket);
+      }
+      if (bucket[bucket.length - 1] !== ci) bucket.push(ci);
+    }
+  });
+
+  const maxDistSq = strokeWidth * strokeWidth;
+  const isNearLongChain = (p: Point2D, self: number) => {
+    const gx0 = Math.floor(p.x / cellSize);
+    const gy0 = Math.floor(p.y / cellSize);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const bucket = grid.get(keyOf(gx0 + dx, gy0 + dy));
+        if (!bucket) continue;
+        for (const ci of bucket) {
+          if (ci === self) continue;
+          for (const q of chains[ci].points) {
+            const ddx = q.x - p.x;
+            const ddy = q.y - p.y;
+            if (ddx * ddx + ddy * ddy <= maxDistSq) return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  return chains.filter((c, ci) => {
+    if (c.isClosed || lengths[ci] >= strokeWidth) return true;
+    const first = c.points[0];
+    const last = c.points[c.points.length - 1];
+    return !(isNearLongChain(first, ci) && isNearLongChain(last, ci));
+  });
+}
+
+/**
+ * Tách vùng mực ĐẶC (dày > 2R px: thân con vật in bóng, chữ đậm...) khỏi nét mảnh bằng phép mở đĩa tròn.
+ * Rút lõi một khối đặc sẽ ra bộ xương "người que" vô nghĩa -> khối đặc được vẽ bằng đường viền bao,
+ * còn nét mảnh (kể cả râu mèo mọc ra từ khối) vẫn rút đường tâm như cũ.
+ */
+function splitSolidInkRegions(
+  mask: Uint8Array,
+  width: number,
+  height: number
+): { solid: Uint8Array; thin: Uint8Array; distToSolid: Float32Array } | null {
+  const R = 5;
+  const totalPixels = width * height;
+  const distToBg = chamferDistance(totalPixels, width, height, (i) => !mask[i]);
+  let coreCount = 0;
+  const core = new Uint8Array(totalPixels);
+  for (let i = 0; i < totalPixels; i++) {
+    if (mask[i] && distToBg[i] > R) {
+      core[i] = 1;
+      coreCount++;
+    }
+  }
+  if (coreCount === 0) return null;
+
+  const distToCore = chamferDistance(totalPixels, width, height, (i) => core[i] === 1);
+  const solid = new Uint8Array(totalPixels);
+  for (let i = 0; i < totalPixels; i++) {
+    if (mask[i] && distToCore[i] <= R + 0.5) solid[i] = 1;
+  }
+
+  // Chỉ giữ khối thật sự "mập": nét cọ/bút dạ dày vẫn là MỘT nét (diện tích / bán kính² rất lớn),
+  // chỗ nét gập góc hơi phình (bán kính chỉ nhỉnh hơn R) cũng không phải khối đặc.
+  const compSeen = new Uint8Array(totalPixels);
+  const comp: number[] = [];
+  for (let start = 0; start < totalPixels; start++) {
+    if (!solid[start] || compSeen[start]) continue;
+    comp.length = 0;
+    comp.push(start);
+    compSeen[start] = 1;
+    let maxRadius = 0;
+    for (let q = 0; q < comp.length; q++) {
+      const idx = comp[q];
+      if (distToBg[idx] > maxRadius) maxRadius = distToBg[idx];
+      const cx = idx % width;
+      const cy = (idx - cx) / width;
+      for (let d = 0; d < 8; d++) {
+        const nx = cx + DX8[d];
+        const ny = cy + DY8[d];
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const nIdx = ny * width + nx;
+        if (solid[nIdx] && !compSeen[nIdx]) {
+          compSeen[nIdx] = 1;
+          comp.push(nIdx);
+        }
+      }
+    }
+    if (maxRadius < R + 1.5 || comp.length / (maxRadius * maxRadius) > 20) {
+      for (const idx of comp) solid[idx] = 0;
+    }
+  }
+
+  // Trả lại cho khối các mảnh dư ngắn & dày (chóp tai nhọn, góc lõm) mà đĩa tròn không với tới;
+  // mảnh dài & mỏng (râu, nét bút chạm khối) giữ lại làm nét mảnh.
+  const distToSolid = chamferDistance(totalPixels, width, height, (i) => solid[i] === 1);
+  const maxTipArea = R * R * 5;
+  const visited = new Uint8Array(totalPixels);
+  const queue: number[] = [];
+  for (let start = 0; start < totalPixels; start++) {
+    if (!mask[start] || solid[start] || visited[start]) continue;
+    queue.length = 0;
+    queue.push(start);
+    visited[start] = 1;
+    let touchesSolid = false;
+    let maxReach = 0;
+    for (let q = 0; q < queue.length && queue.length <= maxTipArea; q++) {
+      const idx = queue[q];
+      if (distToSolid[idx] > maxReach) maxReach = distToSolid[idx];
+      const cx = idx % width;
+      const cy = (idx - cx) / width;
+      for (let d = 0; d < 8; d++) {
+        const nx = cx + DX8[d];
+        const ny = cy + DY8[d];
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const nIdx = ny * width + nx;
+        if (solid[nIdx]) {
+          touchesSolid = true;
+        } else if (mask[nIdx] && !visited[nIdx]) {
+          visited[nIdx] = 1;
+          queue.push(nIdx);
+        }
+      }
+    }
+    const meanThickness = queue.length / Math.max(1, maxReach);
+    if (touchesSolid && queue.length <= maxTipArea && (maxReach <= 3 || meanThickness >= 2.5)) {
+      for (const idx of queue) solid[idx] = 1;
+    }
+  }
+
+  const thin = new Uint8Array(totalPixels);
+  for (let i = 0; i < totalPixels; i++) {
+    if (mask[i] && !solid[i]) thin[i] = 1;
+  }
+  return { solid, thin, distToSolid };
+}
+
 export function traceCenterlineStrokeLayer(
   inkMask: Uint8Array,
   width: number,
@@ -462,7 +663,9 @@ export function traceCenterlineStrokeLayer(
   cornerThreshold: number,
   curveSmoothing: number,
   userStrokeWidth: number,
-  timingsOut?: { tracingMs: number; curveFittingMs: number }
+  useOptimalFitter = false,
+  timingsOut?: { tracingMs: number; curveFittingMs: number },
+  outlineSolidRegions = false
 ): VectorPathData | null {
   const tTraceStart = performance.now();
   let inkPixels = 0;
@@ -492,17 +695,33 @@ export function traceCenterlineStrokeLayer(
     }
   }
 
+  const split = outlineSolidRegions
+    ? splitSolidInkRegions(healedMask, width, height)
+    : null;
+  const thinMask = split ? split.thin : healedMask;
+  let thinInkPixels = inkPixels;
+  if (split) {
+    thinInkPixels = 0;
+    for (let i = 0; i < thinMask.length; i++) {
+      if (thinMask[i]) thinInkPixels++;
+    }
+  }
+
   const { skeleton, skeletonCount } = zhangSuenThinning(
-    healedMask,
+    thinMask,
     width,
     height
   );
-  if (skeletonCount === 0) return null;
+  if (skeletonCount === 0 && !split) return null;
 
-  const estimatedWidth = Math.max(
-    1.8,
-    Math.min(10, Math.round((inkPixels / Math.max(1, skeletonCount)) * 10) / 10)
-  );
+  // Độ dày chỉ đo trên nét mảnh; ảnh toàn khối đặc thì dùng nét viền mặc định 2px
+  const estimatedWidth =
+    skeletonCount > 0
+      ? Math.max(
+          1.8,
+          Math.min(10, Math.round((thinInkPixels / skeletonCount) * 10) / 10)
+        )
+      : 2;
   const finalStrokeWidth =
     userStrokeWidth > 0 ? userStrokeWidth : estimatedWidth;
 
@@ -657,28 +876,91 @@ export function traceCenterlineStrokeLayer(
   }
 
   // Hàn nối các đoạn rời sát nhau thành 1 đường liên tục theo góc tiếp tuyến
-  const stitchedChains = stitchNearbyOpenChains(rawChains);
+  const stitchedChains = removeCoveredStubChains(
+    stitchNearbyOpenChains(rawChains),
+    finalStrokeWidth
+  );
   const tFitStart = performance.now();
 
   const subpaths: string[] = [];
   const allAnchors: AnchorPoint[] = [];
   let totalNodes = 0;
 
+  const optimalOpts = optimalCurveOptionsFromParams(
+    simplifyTolerance,
+    cornerThreshold,
+    true
+  );
+
   for (const chain of stitchedChains) {
     if (chain.points.length < 3 && !chain.isClosed) continue;
+    // Vụn pixel dư chạy dọc mép khối đặc (không phải nét thật) -> đường viền đã vẽ thay
+    if (split && !chain.isClosed) {
+      let hugging = 0;
+      for (const pt of chain.points) {
+        if (split.distToSolid[pt.y * width + pt.x] <= 2.5) hugging++;
+      }
+      if (hugging >= chain.points.length * 0.8) continue;
+    }
     const smoothed = smoothSkeletonChain(chain.points, chain.isClosed);
-    const { subpath, anchors } = fitCenterlineChainToBezier(
-      smoothed,
-      chain.isClosed,
-      simplifyTolerance,
-      cornerThreshold,
-      curveSmoothing
-    );
+    const { subpath, anchors } = useOptimalFitter
+      ? fitOptimalCurve(smoothed, chain.isClosed, optimalOpts)
+      : fitCenterlineChainToBezier(
+          smoothed,
+          chain.isClosed,
+          simplifyTolerance,
+          cornerThreshold,
+          curveSmoothing
+        );
     if (subpath) {
       subpaths.push(subpath);
       totalNodes += anchors.length;
       if (allAnchors.length < 25000) {
         allAnchors.push(...anchors);
+      }
+    }
+  }
+
+  if (split) {
+    const outlineOpts = optimalCurveOptionsFromParams(
+      simplifyTolerance,
+      cornerThreshold,
+      false
+    );
+    const contours = traceBinaryMaskContours(
+      split.solid,
+      width,
+      height,
+      0,
+      0,
+      cornerThreshold,
+      curveSmoothing,
+      simplifyTolerance,
+      useOptimalFitter
+    );
+    for (const contour of contours) {
+      if (contour.length < 12) continue;
+      // Bỏ lỗ thủng/đốm li ti (khe giữa râu và thân...) — vẽ viền chúng chỉ ra các hạt chấm lắt nhắt
+      let area2 = 0;
+      for (let k = 0, j = contour.length - 1; k < contour.length; j = k++) {
+        area2 += contour[j].x * contour[k].y - contour[k].x * contour[j].y;
+      }
+      if (Math.abs(area2) / 2 < 30) continue;
+      const { subpath, anchors } = useOptimalFitter
+        ? fitOptimalCurve(contour, true, outlineOpts)
+        : fitCenterlineChainToBezier(
+            contour,
+            true,
+            simplifyTolerance,
+            cornerThreshold,
+            curveSmoothing
+          );
+      if (subpath) {
+        subpaths.push(subpath);
+        totalNodes += anchors.length;
+        if (allAnchors.length < 25000) {
+          allAnchors.push(...anchors);
+        }
       }
     }
   }

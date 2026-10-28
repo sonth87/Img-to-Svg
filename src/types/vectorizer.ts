@@ -1,5 +1,6 @@
 export type VectorizeMode = 'color' | 'cartoon' | 'centerline' | 'monochrome';
 export type LayerStackMode = 'stacked' | 'cutout';
+export type CurveFitterMode = 'optimal' | 'legacy';
 export type ViewStage =
   | 'split'
   | 'original'
@@ -44,6 +45,8 @@ export interface VectorizerParams {
   cornerThreshold: number;
   /** Bước 5c: Độ uốn mượt đường cong Cubic Bézier (0 = đa giác thẳng, 1.0 = chuẩn Catmull-Rom/Schneider) */
   curveSmoothing: number;
+  /** Bước 5d: Thuật toán khớp đường cong ('optimal' = đa giác tối ưu kiểu Potrace, 'legacy' = RDP + Bézier cũ). Mặc định 'optimal' */
+  curveFitter?: CurveFitterMode;
   /** Tự động tách bỏ màu nền (Background Removal) mà không làm thay đổi cấu trúc vector bên trong vật thể */
   removeBackground?: boolean;
   /** Độ nhạy gom các sắc độ màu nền tương đồng từ viền ảnh (5..80, mặc định 24) */
@@ -67,6 +70,8 @@ export interface PaletteColor {
   customHex?: string;
   mergedInto?: number | null;
   isStrokeLayer?: boolean;
+  /** Tỉ lệ phủ mực thực của mask nét mảnh (0..1), dùng hiệu chỉnh độ dày nét tự ước lượng */
+  strokeCoverage?: number;
 }
 
 export interface AnchorPoint {

@@ -32,7 +32,8 @@ export function traceBinaryMaskContours(
   offsetY = 0,
   cornerThreshold = 75,
   curveSmoothing = 0.95,
-  simplifyTolerance = 0.9
+  simplifyTolerance = 0.9,
+  rawPixelEdges = false
 ): Point2D[][] {
   const gw = width + 1;
   const gh = height + 1;
@@ -124,6 +125,12 @@ export function traceBinaryMaskContours(
         }
 
         if (rawVertices.length < 4) continue;
+
+        // Thuật toán đa giác tối ưu (optimalCurve.ts) cần nguyên chuỗi đỉnh lưới pixel, không làm mượt trước
+        if (rawPixelEdges) {
+          contours.push(rawVertices);
+          continue;
+        }
 
         const n = rawVertices.length;
 
@@ -389,7 +396,8 @@ export function extractAllColorLayerContours(
   layerMode: LayerStackMode,
   cornerThreshold = 75,
   curveSmoothing = 0.95,
-  simplifyTolerance = 0.9
+  simplifyTolerance = 0.9,
+  rawPixelEdges = false
 ): TracedLayerContours[] {
   const totalPixels = width * height;
 
@@ -514,7 +522,8 @@ export function extractAllColorLayerContours(
         y0,
         cornerThreshold,
         curveSmoothing,
-        simplifyTolerance
+        simplifyTolerance,
+        rawPixelEdges
       );
       if (contours.length > 0) {
         results.push({
@@ -607,7 +616,8 @@ export function extractAllColorLayerContours(
         by0,
         cornerThreshold,
         curveSmoothing,
-        simplifyTolerance
+        simplifyTolerance,
+        rawPixelEdges
       );
       if (contours.length > 0) {
         results.push({
@@ -635,7 +645,8 @@ export function extractAllColorLayerContours(
         0,
         cornerThreshold,
         curveSmoothing,
-        simplifyTolerance
+        simplifyTolerance,
+        rawPixelEdges
       );
       if (contours.length > 0) {
         results.push({

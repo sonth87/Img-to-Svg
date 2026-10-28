@@ -10,6 +10,7 @@ import { quantizeImageColors } from './quantize';
 import { applyPaletteOverridesAndDespeckle } from './despeckle';
 import { extractAllColorLayerContours } from './marchingSquares';
 import { buildVectorPathsFromLayers } from './curveFitting';
+import { buildOptimalCurvePathsFromLayers } from './optimalCurve';
 import { traceCenterlineStrokeLayer } from './centerline';
 import { buildSvgDocument } from './svgBuilder';
 
@@ -122,6 +123,9 @@ export function runVectorizationPipeline(
 
   // BƯỚC 4 & 5: Dò biên & Khớp đường cong
   const t3 = performance.now();
+  // Chế độ Pixel Art (độ uốn mượt = 0) luôn giữ thuật toán cũ để bám đúng lưới pixel vuông
+  const useOptimalFitter =
+    (params.curveFitter ?? 'optimal') === 'optimal' && params.curveSmoothing > 0.02;
   let paths: VectorPathData[] = [];
   let tracingMs = 0;
   let curveFittingMs = 0;
@@ -141,7 +145,9 @@ export function runVectorizationPipeline(
         params.cornerThreshold,
         params.curveSmoothing,
         params.strokeWidth,
-        timings
+        useOptimalFitter,
+        timings,
+        true
       );
       if (strokePath) {
         paths.push(strokePath);
@@ -158,17 +164,24 @@ export function runVectorizationPipeline(
       params.layerMode,
       params.cornerThreshold,
       params.curveSmoothing,
-      params.simplifyTolerance
+      params.simplifyTolerance,
+      useOptimalFitter
     );
     tracingMs = Math.round(performance.now() - t3);
 
     const t4 = performance.now();
-    paths = buildVectorPathsFromLayers(
-      tracedLayers,
-      params.simplifyTolerance,
-      params.cornerThreshold,
-      params.curveSmoothing
-    );
+    paths = useOptimalFitter
+      ? buildOptimalCurvePathsFromLayers(
+          tracedLayers,
+          params.simplifyTolerance,
+          params.cornerThreshold
+        )
+      : buildVectorPathsFromLayers(
+          tracedLayers,
+          params.simplifyTolerance,
+          params.cornerThreshold,
+          params.curveSmoothing
+        );
 
     // Nếu ở chế độ Cartoon HOẶC bật tùy chọn `singleLineStrokes` trong chế độ Đa Sắc:
     // Vẽ thêm lớp Nét Đơn Centerline (Single-Stroke Outline) đè lên trên các mảng màu!
@@ -188,9 +201,17 @@ export function runVectorizationPipeline(
           params.simplifyTolerance,
           params.cornerThreshold,
           params.curveSmoothing,
-          params.strokeWidth
+          params.strokeWidth,
+          useOptimalFitter
         );
         if (strokePath) {
+          // Độ dày tự ước lượng đếm cả viền xám anti-alias -> thu về độ dày mực thực
+          if (params.strokeWidth <= 0 && strokeCol.strokeCoverage && strokePath.strokeWidth) {
+            strokePath.strokeWidth = Math.max(
+              1,
+              Math.round(strokePath.strokeWidth * strokeCol.strokeCoverage * 10) / 10
+            );
+          }
           paths.push(strokePath);
         }
       }

@@ -47,6 +47,54 @@ export function rgbToHex(r: number, g: number, b: number): string {
  * trực tiếp từ ảnh gốc `rawPixels` (chưa bị làm mờ bởi Bilateral Filter), sau đó xóa sạch (inpaint)
  * cả nét vẽ lẫn quầng xám anti-alias khỏi `smoothedPixels` để K-Means không bao giờ sinh ra mảng xám răng cưa!
  */
+/**
+ * Bản đồ khoảng cách Chamfer 2 lượt (trọng số 1 / √2) tới pixel hạt giống gần nhất.
+ * Viền khung ảnh được coi như hạt giống khi `isSeed` đánh dấu nền (pixel ngoài ảnh là nền).
+ */
+export function chamferDistance(
+  totalPixels: number,
+  width: number,
+  height: number,
+  isSeed: (i: number) => boolean
+): Float32Array {
+  const dist = new Float32Array(totalPixels);
+  const INF = 1e9;
+  for (let i = 0; i < totalPixels; i++) dist[i] = isSeed(i) ? 0 : INF;
+  const D = Math.SQRT2;
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const i = row + x;
+      let d = dist[i];
+      if (d === 0) continue;
+      if (x > 0) d = Math.min(d, dist[i - 1] + 1);
+      if (y > 0) {
+        d = Math.min(d, dist[i - width] + 1);
+        if (x > 0) d = Math.min(d, dist[i - width - 1] + D);
+        if (x + 1 < width) d = Math.min(d, dist[i - width + 1] + D);
+      }
+      dist[i] = d;
+    }
+  }
+  for (let y = height - 1; y >= 0; y--) {
+    const row = y * width;
+    for (let x = width - 1; x >= 0; x--) {
+      const i = row + x;
+      let d = dist[i];
+      if (d === 0) continue;
+      if (x + 1 < width) d = Math.min(d, dist[i + 1] + 1);
+      if (y + 1 < height) {
+        d = Math.min(d, dist[i + width] + 1);
+        if (x + 1 < width) d = Math.min(d, dist[i + width + 1] + D);
+        if (x > 0) d = Math.min(d, dist[i + width - 1] + D);
+      }
+      dist[i] = d;
+    }
+  }
+  return dist;
+}
+
 function extractThinStrokesAndInpaintBuffer(
   rawPixels: Uint8ClampedArray,
   smoothedPixels: Uint8ClampedArray,
@@ -57,6 +105,7 @@ function extractThinStrokesAndInpaintBuffer(
   inpaintedPixels: Uint8ClampedArray;
   thinStrokeMask: Uint8Array;
   strokeColor: { r: number; g: number; b: number; hex: string };
+  strokeCoverage: number;
 } {
   const totalPixels = width * height;
   const rawLum = new Float32Array(totalPixels);
@@ -102,102 +151,153 @@ function extractThinStrokesAndInpaintBuffer(
     }
   }
 
-  // Bước 2: Tìm các nhân đặc (Thick Core): Pixel tối mà toàn bộ vùng bán kính R=5 xung quanh đều tối
-  // Tối ưu hóa bằng phép Co (Erosion) tách chiều 1D (Ngang + Dọc) chạy nhanh gấp 10 lần vòng lặp 2D
+  // Bước 2: Phép mở hình thái bằng đĩa tròn (Disc Opening) qua bản đồ khoảng cách:
+  // - Nhân đặc (Thick Core): pixel tối cách nền xa hơn R=5px (khối dày > 10px như đồng tử, mũi).
+  // - Khối đặc = mọi pixel tối nằm trong bán kính R quanh nhân -> tái tạo đúng hình tròn/elip của khối
+  //   mà KHÔNG nuốt nét mảnh chạy sát bên cạnh (phần tử vuông cũ vươn tới ~10px theo đường chéo).
   const coreRadius = 5;
-  const horizErode = new Uint8Array(totalPixels);
+  const distToLight = chamferDistance(totalPixels, width, height, (i) => !darkMask[i]);
   const thickCore = new Uint8Array(totalPixels);
-
-  for (let y = 0; y < height; y++) {
-    const row = y * width;
-    let run = 0;
-    for (let x = 0; x < width; x++) {
-      run = darkMask[row + x] ? run + 1 : 0;
-      if (run >= coreRadius * 2 + 1) {
-        horizErode[row + x - coreRadius] = 1;
-      }
-    }
+  for (let i = 0; i < totalPixels; i++) {
+    if (darkMask[i] && distToLight[i] > coreRadius) thickCore[i] = 1;
   }
 
-  for (let x = coreRadius; x < width - coreRadius; x++) {
-    let run = 0;
-    for (let y = 0; y < height; y++) {
-      run = horizErode[y * width + x] ? run + 1 : 0;
-      if (run >= coreRadius * 2 + 1) {
-        thickCore[(y - coreRadius) * width + x] = 1;
-      }
-    }
-  }
-
-  // Nở (Dilate) nhân đặc ra bán kính 7px bằng phép Nở tách chiều 1D (Ngang + Dọc)
-  const dilateR = 7;
-  const horizDilate = new Uint8Array(totalPixels);
+  const distToCore = chamferDistance(totalPixels, width, height, (i) => thickCore[i] === 1);
   const solidDarkBlob = new Uint8Array(totalPixels);
+  for (let i = 0; i < totalPixels; i++) {
+    if (darkMask[i] && distToCore[i] <= coreRadius + 0.5) solidDarkBlob[i] = 1;
+  }
 
-  for (let y = 0; y < height; y++) {
-    const row = y * width;
-    let dist = 999;
-    for (let x = 0; x < width; x++) {
-      if (thickCore[row + x]) dist = 0;
-      else dist++;
-      if (dist <= dilateR) horizDilate[row + x] = 1;
-    }
-    dist = 999;
-    for (let x = width - 1; x >= 0; x--) {
-      if (thickCore[row + x]) dist = 0;
-      else dist++;
-      if (dist <= dilateR) horizDilate[row + x] = 1;
+  // Vành anti-alias mềm (pixel xám nhạt hơn ngưỡng mực) bao quanh khối thuộc về khối, không phải nét mảnh;
+  // bước 3b bên dưới sẽ cắt chính xác vành này tại mức sáng 50%.
+  const distToBlob = chamferDistance(totalPixels, width, height, (i) => solidDarkBlob[i] === 1);
+  for (let i = 0; i < totalPixels; i++) {
+    if (darkMask[i] && !solidDarkBlob[i] && rawLum[i] >= inkThreshold && distToBlob[i] <= 2.5) {
+      solidDarkBlob[i] = 1;
     }
   }
 
-  for (let x = 0; x < width; x++) {
-    let dist = 999;
-    for (let y = 0; y < height; y++) {
-      const idx = y * width + x;
-      if (horizDilate[idx]) dist = 0;
-      else dist++;
-      if (dist <= dilateR && darkMask[idx]) solidDarkBlob[idx] = 1;
+  // Trả lại cho khối đặc các mảnh dư nhỏ dính liền với nó (đầu nhọn của elip mũi, góc lượn...)
+  // vì phép mở bằng đĩa tròn không với tới. Nét mảnh thật luôn là một mảnh dài, diện tích lớn.
+  const maxTipArea = coreRadius * coreRadius * 5;
+  const compVisited = new Uint8Array(totalPixels);
+  const compQueue: number[] = [];
+  for (let start = 0; start < totalPixels; start++) {
+    if (!darkMask[start] || solidDarkBlob[start] || compVisited[start]) continue;
+    compQueue.length = 0;
+    compQueue.push(start);
+    compVisited[start] = 1;
+    let touchesBlob = false;
+    let maxReach = 0;
+    for (let q = 0; q < compQueue.length && compQueue.length <= maxTipArea; q++) {
+      const idx = compQueue[q];
+      if (distToBlob[idx] > maxReach) maxReach = distToBlob[idx];
+      const cx = idx % width;
+      const cy = (idx - cx) / width;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = cy + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = cx + dx;
+          if (nx < 0 || nx >= width) continue;
+          const nIdx = ny * width + nx;
+          if (solidDarkBlob[nIdx]) {
+            touchesBlob = true;
+          } else if (darkMask[nIdx] && !compVisited[nIdx]) {
+            compVisited[nIdx] = 1;
+            compQueue.push(nIdx);
+          }
+        }
+      }
     }
-    dist = 999;
-    for (let y = height - 1; y >= 0; y--) {
-      const idx = y * width + x;
-      if (horizDilate[idx]) dist = 0;
-      else dist++;
-      if (dist <= dilateR && darkMask[idx]) solidDarkBlob[idx] = 1;
+    // Đầu nhọn thì ngắn & dày (diện tích / độ vươn xa khỏi khối lớn); râu mèo, nét mảnh chạm khối thì dài & mỏng ~1-2px
+    const meanThickness = compQueue.length / Math.max(1, maxReach);
+    if (touchesBlob && compQueue.length <= maxTipArea && (maxReach <= 3 || meanThickness >= 2.5)) {
+      for (const idx of compQueue) solidDarkBlob[idx] = 1;
     }
   }
 
   // Nét mảnh (Thin Stroke) = Pixel tối NHƯNG không thuộc khối đặc lớn
-  // Đồng thời trích xuất màu mực thực tế từ các pixel cốt lõi của nét mảnh
   const thinStrokeMask = new Uint8Array(totalPixels);
-  let strokeSumR = 0;
-  let strokeSumG = 0;
-  let strokeSumB = 0;
-  let strokeWeightSum = 0;
-
+  const lumHist = new Uint32Array(256);
+  let strokePixelCount = 0;
   for (let i = 0; i < totalPixels; i++) {
     if (darkMask[i] && !solidDarkBlob[i]) {
       thinStrokeMask[i] = 1;
-      const pOff = i * 4;
-      const lum = rawLum[i];
-      // Trọng số cao hơn cho các pixel đậm ở chính giữa lõi nét
-      const w = Math.max(1, 255 - lum);
-      strokeSumR += rawPixels[pOff] * w;
-      strokeSumG += rawPixels[pOff + 1] * w;
-      strokeSumB += rawPixels[pOff + 2] * w;
-      strokeWeightSum += w;
+      lumHist[Math.min(255, Math.round(rawLum[i]))]++;
+      strokePixelCount++;
     }
   }
 
-  const sR = strokeWeightSum > 0 ? Math.round(strokeSumR / strokeWeightSum) : 22;
-  const sG = strokeWeightSum > 0 ? Math.round(strokeSumG / strokeWeightSum) : 27;
-  const sB = strokeWeightSum > 0 ? Math.round(strokeSumB / strokeWeightSum) : 34;
+  // Màu mực thực = trung bình 20% pixel đậm nhất (lõi nét). Trung bình có trọng số cả viền xám
+  // anti-alias làm nét 1px ra màu xám nhạt hơn hẳn ảnh gốc.
+  let coreLumLimit = 255;
+  for (let l = 0, acc = 0; l < 256; l++) {
+    acc += lumHist[l];
+    if (acc >= strokePixelCount * 0.2) {
+      coreLumLimit = l;
+      break;
+    }
+  }
+  let strokeSumR = 0;
+  let strokeSumG = 0;
+  let strokeSumB = 0;
+  let strokeCoreCount = 0;
+  for (let i = 0; i < totalPixels; i++) {
+    if (!thinStrokeMask[i] || rawLum[i] > coreLumLimit + 0.5) continue;
+    const pOff = i * 4;
+    strokeSumR += rawPixels[pOff];
+    strokeSumG += rawPixels[pOff + 1];
+    strokeSumB += rawPixels[pOff + 2];
+    strokeCoreCount++;
+  }
+
+  const sR = strokeCoreCount > 0 ? Math.round(strokeSumR / strokeCoreCount) : 22;
+  const sG = strokeCoreCount > 0 ? Math.round(strokeSumG / strokeCoreCount) : 27;
+  const sB = strokeCoreCount > 0 ? Math.round(strokeSumB / strokeCoreCount) : 34;
   const strokeColor = {
     r: sR,
     g: sG,
     b: sB,
     hex: rgbToHex(sR, sG, sB),
   };
+
+  // Tỉ lệ phủ mực: tổng độ đậm (0..1 so với nền cục bộ) của nét + viền 1px quanh nét, chia cho số pixel mask.
+  // Mask nhị phân gộp cả pixel xám nửa phủ nên đếm pixel/độ dài khung xương thổi phồng nét 1px lên ~2px.
+  const inkLum = 0.299 * sR + 0.587 * sG + 0.114 * sB;
+  let coverageSum = 0;
+  for (let y = 2; y < height - 2; y++) {
+    const row = y * width;
+    for (let x = 2; x < width - 2; x++) {
+      const i = row + x;
+      if (solidDarkBlob[i]) continue;
+      if (
+        !thinStrokeMask[i] &&
+        !thinStrokeMask[i - 1] &&
+        !thinStrokeMask[i + 1] &&
+        !thinStrokeMask[i - width] &&
+        !thinStrokeMask[i + width]
+      ) {
+        continue;
+      }
+      let localBg = rawLum[i];
+      for (let dy = -2; dy <= 2; dy++) {
+        const rOff = row + dy * width;
+        for (let dx = -2; dx <= 2; dx++) {
+          const nIdx = rOff + x + dx;
+          if (!solidDarkBlob[nIdx] && rawLum[nIdx] > localBg) localBg = rawLum[nIdx];
+        }
+      }
+      const contrast = localBg - inkLum;
+      if (contrast < 30) {
+        if (thinStrokeMask[i]) coverageSum += 1;
+        continue;
+      }
+      coverageSum += Math.max(0, Math.min(1, (localBg - rawLum[i]) / contrast));
+    }
+  }
+  const strokeCoverage =
+    strokePixelCount > 0 ? Math.max(0.3, Math.min(1, coverageSum / strokePixelCount)) : 1;
 
   // Bước 3: Xóa sạch (Inpaint) cả nét mảnh LẪN toàn bộ quầng xám anti-alias (bán kính 3px quanh nét mảnh)
   // bằng phương pháp lan truyền đối xứng (Balanced Voronoi Wavefront Inpainting) từ hai bên mép nét vào tâm!
@@ -224,6 +324,101 @@ function extractThinStrokesAndInpaintBuffer(
   }
 
   const inpaintedPixels = new Uint8ClampedArray(smoothedPixels);
+
+  // Bước 3b: Chuẩn hóa viền khối mực đặc (đồng tử, mũi...): quầng xám anti-alias quanh khối đặc
+  // được cắt tại mức 50% giữa màu mực và màu nền cục bộ -> pixel tối hơn sơn hẳn màu mực, sáng hơn thì
+  // inpaint theo nền. Nhờ vậy không còn lớp màu xám rác bám quanh khối và biên khối tròn đúng hình gốc.
+  let coreSumR = 0;
+  let coreSumG = 0;
+  let coreSumB = 0;
+  let coreCount = 0;
+  for (let i = 0; i < totalPixels; i++) {
+    if (!thickCore[i]) continue;
+    const pOff = i * 4;
+    coreSumR += rawPixels[pOff];
+    coreSumG += rawPixels[pOff + 1];
+    coreSumB += rawPixels[pOff + 2];
+    coreCount++;
+  }
+
+  // Pixel đã chốt là mực của khối đặc: không bị Inpaint ghi đè và không làm nguồn màu Inpaint
+  // (tránh khối đen lan dần vào khe hở giữa khối và nét mảnh chạy sát bên).
+  const blobInk = new Uint8Array(totalPixels);
+
+  if (coreCount > 0) {
+    const blobR = Math.round(coreSumR / coreCount);
+    const blobG = Math.round(coreSumG / coreCount);
+    const blobB = Math.round(coreSumB / coreCount);
+    const blobLum = 0.299 * blobR + 0.587 * blobG + 0.114 * blobB;
+    const rimRadius = 2;
+    const rimCandidate = new Uint8Array(totalPixels);
+
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        if (!solidDarkBlob[row + x]) continue;
+        const y0 = Math.max(0, y - rimRadius);
+        const y1 = Math.min(height - 1, y + rimRadius);
+        const x0 = Math.max(0, x - rimRadius);
+        const x1 = Math.min(width - 1, x + rimRadius);
+        for (let ny = y0; ny <= y1; ny++) {
+          const rOff = ny * width;
+          for (let nx = x0; nx <= x1; nx++) {
+            rimCandidate[rOff + nx] = 1;
+          }
+        }
+      }
+    }
+
+    for (let y = rimRadius; y < height - rimRadius; y++) {
+      const row = y * width;
+      for (let x = rimRadius; x < width - rimRadius; x++) {
+        const i = row + x;
+        if (!rimCandidate[i] || thinStrokeMask[i]) continue;
+        if (rawPixels[i * 4 + 3] < 128) continue;
+
+        let bgLum = rawLum[i];
+        for (let dy = -rimRadius; dy <= rimRadius; dy++) {
+          const rOff = (y + dy) * width;
+          for (let dx = -rimRadius; dx <= rimRadius; dx++) {
+            const nl = rawLum[rOff + x + dx];
+            if (nl > bgLum) bgLum = nl;
+          }
+        }
+        // Lõi khối đặc (xung quanh toàn mực) giữ nguyên
+        if (bgLum - blobLum < 40) {
+          if (solidDarkBlob[i]) {
+            const pOff = i * 4;
+            inpaintedPixels[pOff] = blobR;
+            inpaintedPixels[pOff + 1] = blobG;
+            inpaintedPixels[pOff + 2] = blobB;
+            blobInk[i] = 1;
+            toInpaint[i] = 0;
+          }
+          continue;
+        }
+
+        // So ngưỡng trên độ sáng trung bình 3x3 để pixel nhiễu lẻ ngay mép không bị lật màu thành khía/u
+        let localLum = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const rOff = (y + dy) * width + x;
+          localLum += rawLum[rOff - 1] + rawLum[rOff] + rawLum[rOff + 1];
+        }
+        localLum = (localLum + rawLum[i]) / 10;
+        if (localLum <= (bgLum + blobLum) * 0.5) {
+          const pOff = i * 4;
+          inpaintedPixels[pOff] = blobR;
+          inpaintedPixels[pOff + 1] = blobG;
+          inpaintedPixels[pOff + 2] = blobB;
+          blobInk[i] = 1;
+          toInpaint[i] = 0;
+        } else {
+          toInpaint[i] = 1;
+        }
+      }
+    }
+  }
+
   const resolved = new Uint8Array(totalPixels);
   const unresolvedList: number[] = [];
 
@@ -233,7 +428,8 @@ function extractThinStrokesAndInpaintBuffer(
       const i = row + x;
       if (smoothedPixels[i * 4 + 3] < 128) continue;
       if (toInpaint[i] === 0) {
-        resolved[i] = 1;
+        // 2 = đã chốt nhưng không làm nguồn lan màu (vòng lặp chỉ lấy nguồn có resolved === 1)
+        resolved[i] = blobInk[i] ? 2 : 1;
       } else {
         unresolvedList.push(i);
       }
@@ -348,7 +544,234 @@ function extractThinStrokesAndInpaintBuffer(
     }
   }
 
-  return { inpaintedPixels, thinStrokeMask, strokeColor };
+  return { inpaintedPixels, thinStrokeMask, strokeColor, strokeCoverage };
+}
+
+/**
+ * Ảnh có phải bản vẽ nét mực trên giấy không? (nền viền ảnh gần trắng & không màu, hoặc trong suốt,
+ * và phần không-phải-nền chủ yếu là mực tối chứ không phải mảng màu trung tính / đổ bóng).
+ */
+function looksLikeInkOnPaper(
+  src: Uint8ClampedArray,
+  width: number,
+  height: number,
+  inkThreshold: number
+): boolean {
+  let paper = 0;
+  let border = 0;
+  const step = Math.max(1, Math.floor((width + height) / 400));
+  const sample = (x: number, y: number) => {
+    const idx = (y * width + x) * 4;
+    border++;
+    if (src[idx + 3] < 128) {
+      paper++;
+      return;
+    }
+    const r = src[idx];
+    const g = src[idx + 1];
+    const b = src[idx + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (lum >= 200 && Math.max(r, g, b) - Math.min(r, g, b) <= 40) paper++;
+  };
+  for (let x = 0; x < width; x += step) {
+    sample(x, 0);
+    sample(x, height - 1);
+  }
+  for (let y = 0; y < height; y += step) {
+    sample(0, y);
+    sample(width - 1, y);
+  }
+  if (paper < border * 0.7) return false;
+
+  let ink = 0;
+  let midtone = 0;
+  for (let i = 0; i < width * height; i += 3) {
+    const idx = i * 4;
+    if (src[idx + 3] < 128) continue;
+    const r = src[idx];
+    const g = src[idx + 1];
+    const b = src[idx + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (lum < inkThreshold) ink++;
+    else if (lum < 200 || Math.max(r, g, b) - Math.min(r, g, b) > 40) midtone++;
+  }
+  return midtone <= ink;
+}
+
+/**
+ * Bản phác thảo từ ẢNH MÀU / ẢNH RENDER: dò cạnh Canny trên ảnh đã làm mờ theo tỉ lệ ảnh
+ * (xóa kết cấu nhỏ như vảy, lông), giữ đường bao & cạnh chính, bỏ mẩu cạnh vụn.
+ * Ngưỡng độ tối không dùng được ở đây: đổ bóng & kết cấu biến thành lưới chấm dày đặc.
+ */
+function buildEdgeSketchMask(
+  src: Uint8ClampedArray,
+  width: number,
+  height: number
+): Uint8Array {
+  const total = width * height;
+  const sigma = Math.max(1.5, Math.min(width, height) / 380);
+  const radius = Math.ceil(sigma * 3);
+  const kernel = new Float32Array(radius * 2 + 1);
+  let kSum = 0;
+  for (let k = -radius; k <= radius; k++) {
+    kernel[k + radius] = Math.exp(-(k * k) / (2 * sigma * sigma));
+    kSum += kernel[k + radius];
+  }
+  for (let k = 0; k < kernel.length; k++) kernel[k] /= kSum;
+
+  // Làm mờ Gauss tách trục cho 3 kênh (pixel trong suốt coi như nền trắng)
+  const chans = [new Float32Array(total), new Float32Array(total), new Float32Array(total)];
+  for (let i = 0; i < total; i++) {
+    const a = src[i * 4 + 3] / 255;
+    for (let c = 0; c < 3; c++) chans[c][i] = src[i * 4 + c] * a + 255 * (1 - a);
+  }
+  const tmp = new Float32Array(total);
+  for (const ch of chans) {
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        let acc = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const xx = Math.min(width - 1, Math.max(0, x + k));
+          acc += ch[row + xx] * kernel[k + radius];
+        }
+        tmp[row + x] = acc;
+      }
+    }
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let acc = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const yy = Math.min(height - 1, Math.max(0, y + k));
+          acc += tmp[yy * width + x] * kernel[k + radius];
+        }
+        ch[y * width + x] = acc;
+      }
+    }
+  }
+
+  // Gradient màu Sobel (cộng bình phương 3 kênh) -> cạnh vàng/xanh mạnh dù độ sáng gần nhau
+  const mag = new Float32Array(total);
+  const gxs = new Float32Array(total);
+  const gys = new Float32Array(total);
+  let maxMag = 0;
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = y * width + x;
+      let sxx = 0;
+      let syy = 0;
+      let sxy = 0;
+      for (const ch of chans) {
+        const gx =
+          ch[i - width + 1] + 2 * ch[i + 1] + ch[i + width + 1] -
+          ch[i - width - 1] - 2 * ch[i - 1] - ch[i + width - 1];
+        const gy =
+          ch[i + width - 1] + 2 * ch[i + width] + ch[i + width + 1] -
+          ch[i - width - 1] - 2 * ch[i - width] - ch[i - width + 1];
+        sxx += gx * gx;
+        syy += gy * gy;
+        sxy += gx * gy;
+      }
+      // Hướng chủ đạo của tensor cấu trúc màu (Di Zenzo)
+      const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+      const m = Math.sqrt(Math.max(0, 0.5 * (sxx + syy + Math.sqrt((sxx - syy) ** 2 + 4 * sxy * sxy))));
+      mag[i] = m;
+      gxs[i] = Math.cos(theta);
+      gys[i] = Math.sin(theta);
+      if (m > maxMag) maxMag = m;
+    }
+  }
+  const edges = new Uint8Array(total);
+  if (maxMag <= 0) return edges;
+
+  // Non-maximum suppression theo hướng gradient
+  const nms = new Float32Array(total);
+  for (let y = 2; y < height - 2; y++) {
+    for (let x = 2; x < width - 2; x++) {
+      const i = y * width + x;
+      const m = mag[i];
+      if (m <= 0) continue;
+      const dx = Math.round(gxs[i]);
+      const dy = Math.round(gys[i]);
+      if (m >= mag[i + dy * width + dx] && m >= mag[i - dy * width - dx]) nms[i] = m;
+    }
+  }
+
+  // Ngưỡng trễ (hysteresis) theo phân vị của các đỉnh cạnh
+  const hist = new Uint32Array(1024);
+  let candidates = 0;
+  for (let i = 0; i < total; i++) {
+    if (nms[i] > 0) {
+      hist[Math.min(1023, Math.floor((nms[i] / maxMag) * 1023))]++;
+      candidates++;
+    }
+  }
+  let highBin = 1023;
+  for (let b = 1023, acc = 0; b >= 0; b--) {
+    acc += hist[b];
+    if (acc >= candidates * 0.12) {
+      highBin = b;
+      break;
+    }
+  }
+  const high = (highBin / 1023) * maxMag;
+  const low = high * 0.45;
+  const stack: number[] = [];
+  for (let i = 0; i < total; i++) {
+    if (nms[i] >= high && !edges[i]) {
+      edges[i] = 1;
+      stack.push(i);
+      while (stack.length) {
+        const c = stack.pop()!;
+        const cx = c % width;
+        const cy = (c - cx) / width;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            const n = ny * width + nx;
+            if (!edges[n] && nms[n] >= low) {
+              edges[n] = 1;
+              stack.push(n);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Bỏ mẩu cạnh vụn (kết cấu còn sót) — chỉ giữ đường đủ dài
+  const minLen = Math.max(12, Math.round(Math.min(width, height) / 25));
+  const seen = new Uint8Array(total);
+  const comp: number[] = [];
+  for (let start = 0; start < total; start++) {
+    if (!edges[start] || seen[start]) continue;
+    comp.length = 0;
+    comp.push(start);
+    seen[start] = 1;
+    for (let q = 0; q < comp.length; q++) {
+      const c = comp[q];
+      const cx = c % width;
+      const cy = (c - cx) / width;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const n = ny * width + nx;
+          if (edges[n] && !seen[n]) {
+            seen[n] = 1;
+            comp.push(n);
+          }
+        }
+      }
+    }
+    if (comp.length < minLen) {
+      for (const c of comp) edges[c] = 0;
+    }
+  }
+  return edges;
 }
 
 export function quantizeImageColors(
@@ -377,7 +800,29 @@ export function quantizeImageColors(
     let inkSumG = 0;
     let inkSumB = 0;
 
-    for (let i = 0; i < totalPixels; i++) {
+    // Ảnh màu / render / ảnh chụp -> phác thảo theo cạnh, nét mực đen
+    const edgeMask =
+      params.mode === 'centerline' &&
+      !looksLikeInkOnPaper(srcBuf, width, height, thresh)
+        ? buildEdgeSketchMask(srcBuf, width, height)
+        : null;
+    if (edgeMask) {
+      for (let i = 0; i < totalPixels; i++) {
+        if (edgeMask[i]) {
+          labelMap[i] = 0;
+          thinStrokeMask[i] = 1;
+          inkSumR += 24;
+          inkSumG += 24;
+          inkSumB += 24;
+          darkCount++;
+        } else {
+          labelMap[i] = srcBuf[i * 4 + 3] < 128 ? -1 : 1;
+          if (labelMap[i] === 1) lightCount++;
+        }
+      }
+    }
+
+    for (let i = 0; i < totalPixels && !edgeMask; i++) {
       const idx = i * 4;
       const a = srcBuf[idx + 3];
       if (a < 128) {
@@ -445,6 +890,7 @@ export function quantizeImageColors(
   let workingPixels = smoothedPixels;
   let thinStrokeMask: Uint8Array | undefined;
   let extractedStrokeColor = { r: 22, g: 27, b: 34, hex: '#161B22' };
+  let extractedStrokeCoverage = 1;
 
   if (useSingleLineExtraction) {
     const extracted = extractThinStrokesAndInpaintBuffer(
@@ -457,6 +903,7 @@ export function quantizeImageColors(
     workingPixels = extracted.inpaintedPixels;
     thinStrokeMask = extracted.thinStrokeMask;
     extractedStrokeColor = extracted.strokeColor;
+    extractedStrokeCoverage = extracted.strokeCoverage;
   }
 
   // Hỗ trợ phân cụm từ 2 đến 256 màu bằng thuật toán Weighted 18-bit Histogram K-Means++
@@ -783,6 +1230,7 @@ export function quantizeImageColors(
         percentage: (strokePixels / safeTotal) * 100,
         visible: true,
         isStrokeLayer: true,
+        strokeCoverage: extractedStrokeCoverage,
       });
     }
   }

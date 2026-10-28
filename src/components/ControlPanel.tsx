@@ -782,6 +782,12 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       lấn (dùng cho máy cắt Decal/CNC).
                     </li>
                     <li>
+                      <strong>Đa giác tối ưu:</strong> Coi bậc thang pixel là
+                      dung sai, chỉ đặt điểm neo ở nơi hình thật sự đổi hướng
+                      (ít điểm, cong mượt). <strong>RDP cổ điển:</strong> thuật
+                      toán cũ để so sánh.
+                    </li>
+                    <li>
                       <strong>RDP & Bézier:</strong> Điều chỉnh độ mượt và độ
                       nhọn của các điểm neo vector.
                     </li>
@@ -829,6 +835,41 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               </button>
             </div>
           )}
+
+          <div className="grid grid-cols-2 gap-1">
+            <button
+              type="button"
+              onClick={() =>
+                update(
+                  'curveFitter',
+                  'optimal',
+                  'Thuật toán khớp: Đa giác tối ưu'
+                )
+              }
+              className={`py-1 px-2 rounded text-[11px] font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                (params.curveFitter ?? 'optimal') === 'optimal'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-slate-200/80 dark:bg-slate-800/70 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              <Sparkles className="w-3 h-3" />
+              Đa giác tối ưu
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                update('curveFitter', 'legacy', 'Thuật toán khớp: RDP cổ điển')
+              }
+              className={`py-1 px-2 rounded text-[11px] font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                params.curveFitter === 'legacy'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-slate-200/80 dark:bg-slate-800/70 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              <Spline className="w-3 h-3" />
+              RDP cổ điển
+            </button>
+          </div>
 
           <div>
             <div className="flex justify-between text-xs mb-0.5">
