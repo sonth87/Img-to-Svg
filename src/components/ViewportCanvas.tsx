@@ -611,15 +611,163 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transformOrigin: 'center center',
             }}
-            className={`relative shadow-2xl rounded-sm overflow-hidden ${
+            className={`relative shadow-2xl rounded-sm overflow-visible ${
               isEraserMode
                 ? 'ring-2 ring-rose-500/80'
                 : 'ring-1 ring-slate-900/10 dark:ring-white/15'
             }`}
           >
-            {/* 1. Chế độ So sánh Trực tiếp (Split Before/After) */}
+            {/* Nhãn ẢNH GỐC / SVG đặt phía trên khung ảnh, bám theo vạch chia và giữ nguyên kích thước chữ ở mọi mức zoom */}
             {viewStage === 'split' && (
-              <>
+              <div
+                style={{
+                  left: `${splitPercent}%`,
+                  transform: `translate(-50%, 0) scale(${1 / zoom})`,
+                  transformOrigin: 'bottom center',
+                }}
+                className="absolute bottom-full mb-1.5 z-30 flex items-center gap-1.5 pointer-events-none select-none"
+              >
+                <span className="whitespace-nowrap px-2 py-0.5 rounded bg-slate-900/90 text-[10px] font-semibold text-white border border-white/15 shadow-md">
+                  ← ẢNH GỐC
+                </span>
+                <span className="whitespace-nowrap px-2 py-0.5 rounded bg-indigo-950/90 text-[10px] font-semibold text-indigo-100 border border-indigo-400/40 shadow-md">
+                  {embeddedImageUrl
+                    ? 'SVG (nhúng ảnh) →'
+                    : `SVG (${result.stats.totalPaths} lớp) →`}
+                </span>
+              </div>
+            )}
+
+            {/* Thanh kéo chia đôi khung hình (Counter-scale theo zoom và tự dời nút tròn xuống đáy khi icon nhỏ) */}
+            {viewStage === 'split' && (
+              <div
+                data-split-handle="true"
+                onPointerDown={handleSplitHandlePointerDown}
+                onPointerMove={handleSplitHandlePointerMove}
+                style={{
+                  left: `${splitPercent}%`,
+                  width: `${Math.max(24, 32 / zoom)}px`,
+                  marginLeft: `-${Math.max(12, 16 / zoom)}px`,
+                }}
+                className="absolute top-0 bottom-0 z-30 flex items-center justify-center cursor-ew-resize no-select-drag group"
+              >
+                <div
+                  style={{ width: `${Math.max(1, 2 / zoom)}px` }}
+                  className="h-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.9)]"
+                />
+                <div
+                  style={{
+                    transform:
+                      displayH * zoom < 140
+                        ? `translateY(14px) scale(${1 / zoom})`
+                        : `scale(${1 / zoom})`,
+                  }}
+                  className={`absolute ${
+                    displayH * zoom < 140 ? 'bottom-0' : 'top-1/2 -translate-y-1/2'
+                  } w-6 h-6 rounded-full bg-indigo-600 border-2 border-white shadow-lg flex items-center justify-center text-white group-hover:scale-110 transition`}
+                >
+                  <MoveHorizontal className="w-3 h-3" />
+                </div>
+              </div>
+            )}
+
+            {/* Khung nội dung ảnh & vector có overflow-hidden để cắt gọn lớp phủ */}
+            <div className="relative w-full h-full overflow-hidden rounded-sm">
+              {/* 1. Chế độ So sánh Trực tiếp (Split Before/After) */}
+              {viewStage === 'split' && (
+                <>
+                  <svg
+                    viewBox={`0 0 ${w} ${h}`}
+                    width={w}
+                    height={h}
+                    className="block w-full h-full"
+                    shapeRendering="geometricPrecision"
+                  >
+                    {embeddedImageUrl ? (
+                      <image
+                        href={embeddedImageUrl}
+                        width={w}
+                        height={h}
+                        preserveAspectRatio="none"
+                      />
+                    ) : null}
+                    {!embeddedImageUrl &&
+                      result.paths.map((p) =>
+                        p.isStroke ? (
+                          <path
+                            key={p.colorId}
+                            fill="none"
+                            stroke={p.hex}
+                            strokeWidth={p.strokeWidth ?? 2.5}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d={p.d}
+                          />
+                        ) : (
+                          <path
+                            key={p.colorId}
+                            fill={p.hex}
+                            stroke={seamWidth > 0 ? p.hex : undefined}
+                            strokeWidth={seamWidth > 0 ? seamWidth : undefined}
+                            strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
+                            strokeLinecap={seamWidth > 0 ? 'round' : undefined}
+                            fillRule="evenodd"
+                            d={p.d}
+                          />
+                        )
+                      )}
+                  </svg>
+
+                  {originalDataUrl && (
+                    <div
+                      style={{
+                        clipPath: `inset(0 ${100 - splitPercent}% 0 0)`,
+                      }}
+                      className="absolute inset-0 pointer-events-none"
+                    >
+                      <img
+                        src={originalDataUrl}
+                        alt="Original Raster"
+                        className="w-full h-full object-contain block"
+                        style={{
+                          imageRendering: zoom > 2 ? 'pixelated' : 'auto',
+                        }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* 2. Chế độ Ảnh Gốc (Original) */}
+              {viewStage === 'original' && originalDataUrl && (
+                <img
+                  src={originalDataUrl}
+                  alt="Original"
+                  className="w-full h-full object-contain block"
+                  style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
+                />
+              )}
+
+              {/* 3. Chế độ Bước 1: Ảnh sau khi Làm phẳng giữ cạnh (Smoothed) */}
+              <canvas
+                ref={smoothedCanvasRef}
+                className={`w-full h-full block ${
+                  viewStage === 'smoothed' ? 'block' : 'hidden'
+                }`}
+                style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
+              />
+
+              {/* 4. Chế độ Bước 2+3: Ảnh sau khi Phân cụm màu & Lọc đốm (Quantized) */}
+              <canvas
+                ref={quantizedCanvasRef}
+                className={`w-full h-full block ${
+                  viewStage === 'quantized' ? 'block' : 'hidden'
+                }`}
+                style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
+              />
+
+              {/* 5. Chế độ Kết quả Vector SVG */}
+              {viewStage === 'svg' && (
                 <svg
                   viewBox={`0 0 ${w} ${h}`}
                   width={w}
@@ -635,267 +783,156 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                       preserveAspectRatio="none"
                     />
                   ) : null}
-                  {!embeddedImageUrl && result.paths.map((p) =>
-                    p.isStroke ? (
-                      <path
-                        key={p.colorId}
-                        fill="none"
-                        stroke={p.hex}
-                        strokeWidth={p.strokeWidth ?? 2.5}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d={p.d}
-                      />
-                    ) : (
-                      <path
-                        key={p.colorId}
-                        fill={p.hex}
-                        stroke={seamWidth > 0 ? p.hex : undefined}
-                        strokeWidth={seamWidth > 0 ? seamWidth : undefined}
-                        strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
-                        strokeLinecap={seamWidth > 0 ? 'round' : undefined}
-                        fillRule="evenodd"
-                        d={p.d}
-                      />
-                    )
-                  )}
-                </svg>
-
-                {originalDataUrl && (
-                  <div
-                    style={{
-                      clipPath: `inset(0 ${100 - splitPercent}% 0 0)`,
-                    }}
-                    className="absolute inset-0 pointer-events-none"
-                  >
-                    <img
-                      src={originalDataUrl}
-                      alt="Original Raster"
-                      className="w-full h-full object-contain block"
-                      style={{
-                        imageRendering: zoom > 2 ? 'pixelated' : 'auto',
-                      }}
-                    />
-                  </div>
-                )}
-
-                <div
-                  data-split-handle="true"
-                  onPointerDown={handleSplitHandlePointerDown}
-                  onPointerMove={handleSplitHandlePointerMove}
-                  style={{ left: `${splitPercent}%` }}
-                  className="absolute top-0 bottom-0 z-20 -ml-4 w-8 flex items-center justify-center cursor-ew-resize no-select-drag group"
-                >
-                  <div className="w-0.5 h-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.9)]" />
-                  <div className="absolute w-7 h-7 rounded-full bg-indigo-600 border-2 border-white shadow-lg flex items-center justify-center text-white group-hover:scale-110 transition">
-                    <MoveHorizontal className="w-3.5 h-3.5" />
-                  </div>
-                </div>
-
-                <div className="absolute top-2 left-2 z-20 px-2 py-0.5 rounded bg-slate-900/80 text-[10px] font-semibold text-white border border-white/10 pointer-events-none">
-                  ẢNH GỐC
-                </div>
-                <div className="absolute top-2 right-2 z-20 px-2 py-0.5 rounded bg-indigo-950/85 text-[10px] font-semibold text-indigo-100 border border-indigo-400/30 pointer-events-none">
-                  {embeddedImageUrl
-                    ? 'SVG (nhúng ảnh gốc)'
-                    : `SVG (${result.stats.totalPaths} lớp)`}
-                </div>
-              </>
-            )}
-
-            {/* 2. Chế độ Ảnh Gốc (Original) */}
-            {viewStage === 'original' && originalDataUrl && (
-              <img
-                src={originalDataUrl}
-                alt="Original"
-                className="w-full h-full object-contain block"
-                style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
-              />
-            )}
-
-            {/* 3. Chế độ Bước 1: Ảnh sau khi Làm phẳng giữ cạnh (Smoothed) */}
-            <canvas
-              ref={smoothedCanvasRef}
-              className={`w-full h-full block ${
-                viewStage === 'smoothed' ? 'block' : 'hidden'
-              }`}
-              style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
-            />
-
-            {/* 4. Chế độ Bước 2+3: Ảnh sau khi Phân cụm màu & Lọc đốm (Quantized) */}
-            <canvas
-              ref={quantizedCanvasRef}
-              className={`w-full h-full block ${
-                viewStage === 'quantized' ? 'block' : 'hidden'
-              }`}
-              style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
-            />
-
-            {/* 5. Chế độ Kết quả Vector SVG */}
-            {viewStage === 'svg' && (
-              <svg
-                viewBox={`0 0 ${w} ${h}`}
-                width={w}
-                height={h}
-                className="block w-full h-full"
-                shapeRendering="geometricPrecision"
-              >
-                {embeddedImageUrl ? (
-                  <image
-                    href={embeddedImageUrl}
-                    width={w}
-                    height={h}
-                    preserveAspectRatio="none"
-                  />
-                ) : null}
-                {!embeddedImageUrl && result.paths.map((p) =>
-                  p.isStroke ? (
-                    <path
-                      key={p.colorId}
-                      fill="none"
-                      stroke={p.hex}
-                      strokeWidth={p.strokeWidth ?? 2.5}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d={p.d}
-                    />
-                  ) : (
-                    <path
-                      key={p.colorId}
-                      fill={p.hex}
-                      stroke={seamWidth > 0 ? p.hex : undefined}
-                      strokeWidth={seamWidth > 0 ? seamWidth : undefined}
-                      strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
-                      strokeLinecap={seamWidth > 0 ? 'round' : undefined}
-                      fillRule="evenodd"
-                      d={p.d}
-                    />
-                  )
-                )}
-              </svg>
-            )}
-
-            {/* 6. Chế độ Khung Dây & Điểm Neo (Wireframe) */}
-            {viewStage === 'wireframe' && (
-              <svg
-                viewBox={`0 0 ${w} ${h}`}
-                width={w}
-                height={h}
-                className="block w-full h-full bg-slate-950"
-                shapeRendering="geometricPrecision"
-              >
-                {result.paths.map((p) => (
-                  <g key={p.colorId}>
-                    {p.isStroke ? (
-                      <>
+                  {!embeddedImageUrl &&
+                    result.paths.map((p) =>
+                      p.isStroke ? (
                         <path
+                          key={p.colorId}
                           fill="none"
-                          stroke="#38BDF8"
-                          strokeOpacity={0.22}
+                          stroke={p.hex}
                           strokeWidth={p.strokeWidth ?? 2.5}
                           strokeLinecap="round"
                           strokeLinejoin="round"
                           d={p.d}
                         />
+                      ) : (
                         <path
-                          fill="none"
-                          stroke="#38BDF8"
-                          strokeWidth={Math.max(0.8, 1.5 / zoom)}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
+                          key={p.colorId}
+                          fill={p.hex}
+                          stroke={seamWidth > 0 ? p.hex : undefined}
+                          strokeWidth={seamWidth > 0 ? seamWidth : undefined}
+                          strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
+                          strokeLinecap={seamWidth > 0 ? 'round' : undefined}
+                          fillRule="evenodd"
                           d={p.d}
                         />
-                      </>
-                    ) : (
-                      <path
-                        fill={p.hex}
-                        fillOpacity={0.14}
-                        stroke={
-                          p.hex === '#121826' || p.hex === '#161B22'
-                            ? '#38BDF8'
-                            : p.hex
-                        }
-                        strokeWidth={Math.max(0.6, 1.2 / zoom)}
-                        fillRule="evenodd"
-                        d={p.d}
-                      />
+                      )
                     )}
-                    {showNodesInWireframe &&
-                      p.anchors.map((pt, idx) =>
-                        pt.isCorner ? (
-                          <rect
-                            key={idx}
-                            x={pt.x - 2.2 / zoom}
-                            y={pt.y - 2.2 / zoom}
-                            width={4.4 / zoom}
-                            height={4.4 / zoom}
-                            fill="#F59E0B"
-                            stroke="#0F172A"
-                            strokeWidth={0.6 / zoom}
+                </svg>
+              )}
+
+              {/* 6. Chế độ Khung Dây & Điểm Neo (Wireframe) */}
+              {viewStage === 'wireframe' && (
+                <svg
+                  viewBox={`0 0 ${w} ${h}`}
+                  width={w}
+                  height={h}
+                  className="block w-full h-full bg-slate-950"
+                  shapeRendering="geometricPrecision"
+                >
+                  {result.paths.map((p) => (
+                    <g key={p.colorId}>
+                      {p.isStroke ? (
+                        <>
+                          <path
+                            fill="none"
+                            stroke="#38BDF8"
+                            strokeOpacity={0.22}
+                            strokeWidth={p.strokeWidth ?? 2.5}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d={p.d}
                           />
-                        ) : (
-                          <circle
-                            key={idx}
-                            cx={pt.x}
-                            cy={pt.y}
-                            r={2.0 / zoom}
-                            fill="#10B981"
-                            stroke="#0F172A"
-                            strokeWidth={0.5 / zoom}
+                          <path
+                            fill="none"
+                            stroke="#38BDF8"
+                            strokeWidth={Math.max(0.8, 1.5 / zoom)}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d={p.d}
                           />
-                        )
+                        </>
+                      ) : (
+                        <path
+                          fill={p.hex}
+                          fillOpacity={0.14}
+                          stroke={
+                            p.hex === '#121826' || p.hex === '#161B22'
+                              ? '#38BDF8'
+                              : p.hex
+                          }
+                          strokeWidth={Math.max(0.6, 1.2 / zoom)}
+                          fillRule="evenodd"
+                          d={p.d}
+                        />
                       )}
-                  </g>
-                ))}
-              </svg>
-            )}
+                      {showNodesInWireframe &&
+                        p.anchors.map((pt, idx) =>
+                          pt.isCorner ? (
+                            <rect
+                              key={idx}
+                              x={pt.x - 2.2 / zoom}
+                              y={pt.y - 2.2 / zoom}
+                              width={4.4 / zoom}
+                              height={4.4 / zoom}
+                              fill="#F59E0B"
+                              stroke="#0F172A"
+                              strokeWidth={0.6 / zoom}
+                            />
+                          ) : (
+                            <circle
+                              key={idx}
+                              cx={pt.x}
+                              cy={pt.y}
+                              r={2.0 / zoom}
+                              fill="#10B981"
+                              stroke="#0F172A"
+                              strokeWidth={0.5 / zoom}
+                            />
+                          )
+                        )}
+                    </g>
+                  ))}
+                </svg>
+              )}
 
-            {/* Tâm ngắm trực quan & hiệu ứng vòng sóng khi Click Xóa Vùng Chủ Động */}
-            {isEraserMode && hoverImgCoords && (
-              <div
-                style={{
-                  left: hoverImgCoords.x,
-                  top: hoverImgCoords.y,
-                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
-                }}
-                className="absolute z-30 pointer-events-none w-6 h-6 rounded-full border-2 border-rose-500 bg-rose-500/15 shadow-[0_0_10px_rgba(244,63,94,0.8)] flex items-center justify-center"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-              </div>
-            )}
+              {/* Tâm ngắm trực quan & hiệu ứng vòng sóng khi Click Xóa Vùng Chủ Động */}
+              {isEraserMode && hoverImgCoords && (
+                <div
+                  style={{
+                    left: hoverImgCoords.x * displayScale,
+                    top: hoverImgCoords.y * displayScale,
+                    transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                  }}
+                  className="absolute z-30 pointer-events-none w-6 h-6 rounded-full border-2 border-rose-500 bg-rose-500/15 shadow-[0_0_10px_rgba(244,63,94,0.8)] flex items-center justify-center"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                </div>
+              )}
 
-            {clickRipple && (
-              <div
-                key={clickRipple.key}
-                style={{
-                  left: clickRipple.x,
-                  top: clickRipple.y,
-                  transform: `translate(-50%, -50%) scale(${1 / zoom})`,
-                }}
-                className="absolute z-30 pointer-events-none w-8 h-8 rounded-full border-2 border-rose-400 animate-ping"
-              />
-            )}
+              {clickRipple && (
+                <div
+                  key={clickRipple.key}
+                  style={{
+                    left: clickRipple.x * displayScale,
+                    top: clickRipple.y * displayScale,
+                    transform: `translate(-50%, -50%) scale(${1 / zoom})`,
+                  }}
+                  className="absolute z-30 pointer-events-none w-8 h-8 rounded-full border-2 border-rose-400 animate-ping"
+                />
+              )}
 
-            {/* Lớp phủ hiệu ứng óng ánh (Shimmer Overlay) */}
-            {viewStage !== 'original' && (
-              <div
-                aria-hidden={!showShimmer}
-                style={{
-                  clipPath:
-                    viewStage === 'split'
-                      ? `inset(0 0 0 ${splitPercent}%)`
-                      : undefined,
-                }}
-                className={`absolute inset-0 z-10 pointer-events-none overflow-hidden transition-opacity duration-300 ${
-                  showShimmer ? 'opacity-100' : 'opacity-0'
-                }`}
-              >
-                <div className="absolute inset-0 backdrop-blur-[5px] bg-slate-950/15 dark:bg-slate-950/30" />
-                <div className="absolute -inset-1/3 ai-aurora-layer mix-blend-screen" />
-                <div className="absolute -inset-full ai-shimmer-beam" />
-                <div className="absolute inset-0 ring-1 ring-inset ring-white/35 dark:ring-indigo-300/30" />
-              </div>
-            )}
+              {/* Lớp phủ hiệu ứng óng ánh (Shimmer Overlay) */}
+              {viewStage !== 'original' && (
+                <div
+                  aria-hidden={!showShimmer}
+                  style={{
+                    clipPath:
+                      viewStage === 'split'
+                        ? `inset(0 0 0 ${splitPercent}%)`
+                        : undefined,
+                  }}
+                  className={`absolute inset-0 z-10 pointer-events-none overflow-hidden transition-opacity duration-300 ${
+                    showShimmer ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  <div className="absolute inset-0 backdrop-blur-[5px] bg-slate-950/15 dark:bg-slate-950/30" />
+                  <div className="absolute -inset-1/3 ai-aurora-layer mix-blend-screen" />
+                  <div className="absolute -inset-full ai-shimmer-beam" />
+                  <div className="absolute inset-0 ring-1 ring-inset ring-white/35 dark:ring-indigo-300/30" />
+                </div>
+              )}
+            </div>
           </div>
         )}
 
