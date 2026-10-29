@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { HelpCircle } from 'lucide-react';
+import { OpticalGlass } from './OpticalGlass';
 
 interface InfoTooltipProps {
   title?: string;
@@ -171,8 +172,8 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
           children
             ? ''
             : isPinned
-            ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-500/15 p-1 -m-0.5'
-            : 'text-slate-400 hover:text-indigo-600 dark:text-slate-500 dark:hover:text-indigo-400 p-1 -m-0.5'
+            ? 'apple-lens-btn-primary text-white p-1 -m-0.5'
+            : 'apple-lens-btn text-slate-500 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-300 p-0.5 -m-0.5'
         }`}
       >
         {children ?? <HelpCircle className="w-3.5 h-3.5" />}
@@ -180,27 +181,42 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
 
       {isOpen &&
         createPortal(
-          <div
+          <OpticalGlass
             ref={popupRef}
             id={tooltipId}
             role="tooltip"
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
-            style={{ top: coords.top, left: coords.left }}
-            className={`fixed z-[100] ${widthClass} max-w-[92vw] p-2.5 rounded-lg bg-slate-900/95 dark:bg-slate-800/95 text-slate-100 border border-slate-700/80 shadow-xl backdrop-blur-md text-[11px] leading-relaxed select-none animate-in fade-in duration-150`}
+            scale={-110}
+            chroma={6}
+            border={0.08}
+            mapBlur={10}
+            blur={10}
+            saturate={1.75}
+            borderRadius={14}
+            tintColor="#38bdf8"
+            tintOpacity={0.2}
+            baseColor="#0f172a"
+            baseOpacity={0.82}
+            highlightOpacity={0.5}
+            innerGlowRadius={14}
+            innerGlowOpacity={0.22}
+            style={{ top: coords.top, left: coords.left, position: 'fixed' }}
+            className={`z-[100] ${widthClass} max-w-[92vw] text-slate-100 text-[11px] leading-relaxed select-none animate-in fade-in duration-150`}
+            contentClassName="p-2.5"
           >
             {title && (
-              <div className="font-semibold text-indigo-300 mb-1 flex items-center justify-between gap-2">
+              <div className="font-semibold text-sky-300 mb-1 flex items-center justify-between gap-2">
                 <span>{title}</span>
                 {isPinned && (
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-indigo-500/25 text-indigo-200">
+                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-sky-500/25 border border-sky-400/40 text-sky-100">
                     Đã ghim
                   </span>
                 )}
               </div>
             )}
-            <div className="text-slate-200/95">{content}</div>
-          </div>,
+            <div className="text-slate-100/95">{content}</div>
+          </OpticalGlass>,
           document.body
         )}
     </>

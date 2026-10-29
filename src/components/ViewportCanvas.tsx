@@ -10,10 +10,12 @@ import {
   MousePointerClick,
   Undo2,
   Redo2,
+  History,
   X,
 } from 'lucide-react';
 import { PipelineResult, ViewStage } from '../types/vectorizer';
 import { InfoTooltip } from './InfoTooltip';
+import { OpticalGlass } from './OpticalGlass';
 import { getSeamStrokeWidth } from '../engine/svgBuilder';
 
 interface ViewportCanvasProps {
@@ -31,6 +33,10 @@ interface ViewportCanvasProps {
   manualEraseCount: number;
   canUndo: boolean;
   canRedo: boolean;
+  historyIndex: number;
+  historyCount: number;
+  showHistoryPopup: boolean;
+  onToggleHistoryPopup: () => void;
   onToggleRemoveBackground: () => void;
   onToggleEraserMode: () => void;
   onChangeManualEraseTolerance: (val: number) => void;
@@ -87,6 +93,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   manualEraseCount,
   canUndo,
   canRedo,
+  historyIndex,
+  historyCount,
+  showHistoryPopup,
+  onToggleHistoryPopup,
   onToggleRemoveBackground,
   onToggleEraserMode,
   onChangeManualEraseTolerance,
@@ -108,6 +118,12 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     x: number;
     y: number;
   } | null>(null);
+  const [loupeState, setLoupeState] = useState<{
+    clientX: number;
+    clientY: number;
+    imgX: number;
+    imgY: number;
+  } | null>(null);
   const [clickRipple, setClickRipple] = useState<{
     x: number;
     y: number;
@@ -128,6 +144,9 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   const movedDuringPointerRef = useRef<boolean>(false);
   const activePointerIdRef = useRef<number | null>(null);
   const wasMultiTouchRef = useRef<boolean>(false);
+  const loupeHoldTimerRef = useRef<number | null>(null);
+  const isLoupeHoldingRef = useRef<boolean>(false);
+  const erasePointerActiveOnImageRef = useRef<boolean>(false);
   const lastTapRef = useRef<{ time: number; x: number; y: number }>({
     time: 0,
     x: 0,
@@ -144,6 +163,23 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   const smoothedCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const quantizedCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const shimmerStartRef = useRef<number>(0);
+
+  const clearLoupeHoldTimer = () => {
+    if (loupeHoldTimerRef.current !== null) {
+      window.clearTimeout(loupeHoldTimerRef.current);
+      loupeHoldTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (!isEraserMode) {
+      clearLoupeHoldTimer();
+      isLoupeHoldingRef.current = false;
+      erasePointerActiveOnImageRef.current = false;
+      setLoupeState(null);
+    }
+    return () => clearLoupeHoldTimer();
+  }, [isEraserMode]);
 
   useEffect(() => {
     viewStateRef.current = { zoom, pan };
@@ -226,6 +262,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       };
       wasMultiTouchRef.current = true;
       movedDuringPointerRef.current = true;
+      clearLoupeHoldTimer();
+      isLoupeHoldingRef.current = false;
+      erasePointerActiveOnImageRef.current = false;
+      setLoupeState(null);
       setIsPanning(false);
     };
 
@@ -429,9 +469,42 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       x: e.clientX - viewStateRef.current.pan.x,
       y: e.clientY - viewStateRef.current.pan.y,
     };
-    if (!isEraserMode) {
+
+    clearLoupeHoldTimer();
+    isLoupeHoldingRef.current = false;
+
+    if (isEraserMode) {
+      const startCoords = clientToImageCoords(e.clientX, e.clientY);
+      if (startCoords) {
+        erasePointerActiveOnImageRef.current = true;
+        setHoverImgCoords(startCoords);
+        const downClientX = e.clientX;
+        const downClientY = e.clientY;
+        // Nhấn giữ ~140ms sẽ bật Kính Lúp phóng đại phía trên con trỏ/ngón tay
+        loupeHoldTimerRef.current = window.setTimeout(() => {
+          loupeHoldTimerRef.current = null;
+          if (
+            !wasMultiTouchRef.current &&
+            !pinchStateRef.current &&
+            erasePointerActiveOnImageRef.current
+          ) {
+            isLoupeHoldingRef.current = true;
+            setLoupeState({
+              clientX: downClientX,
+              clientY: downClientY,
+              imgX: startCoords.x,
+              imgY: startCoords.y,
+            });
+          }
+        }, 140);
+      } else {
+        erasePointerActiveOnImageRef.current = false;
+      }
+    } else {
+      erasePointerActiveOnImageRef.current = false;
       setIsPanning(true);
     }
+
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
@@ -441,8 +514,12 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (pinchStateRef.current) return;
+    const coords = isEraserMode
+      ? clientToImageCoords(e.clientX, e.clientY)
+      : null;
+
     if (isEraserMode && e.pointerType !== 'touch') {
-      setHoverImgCoords(clientToImageCoords(e.clientX, e.clientY));
+      setHoverImgCoords(coords);
     }
 
     if (
@@ -452,12 +529,39 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       return;
     }
 
+    // Khi đang ở chế độ Xóa Click và nhấn trên ảnh: giữ/di chuột sẽ điều khiển Kính Lúp để ngắm chính xác điểm xóa
+    if (isEraserMode && erasePointerActiveOnImageRef.current) {
+      setHoverImgCoords(coords);
+      if (pointerDownClientRef.current) {
+        const dist = Math.hypot(
+          e.clientX - pointerDownClientRef.current.x,
+          e.clientY - pointerDownClientRef.current.y
+        );
+        if (dist >= 4 && !isLoupeHoldingRef.current) {
+          clearLoupeHoldTimer();
+          isLoupeHoldingRef.current = true;
+        }
+      }
+      if (isLoupeHoldingRef.current) {
+        if (coords) {
+          setLoupeState({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            imgX: coords.x,
+            imgY: coords.y,
+          });
+        } else {
+          setLoupeState(null);
+        }
+      }
+      return;
+    }
+
     if (pointerDownClientRef.current) {
       const dist = Math.hypot(
         e.clientX - pointerDownClientRef.current.x,
         e.clientY - pointerDownClientRef.current.y
       );
-      // Ngưỡng di chuyển trên màn hình cảm ứng (8px) lớn hơn chuột (5px) để chạm nhẹ không bị tính nhầm là kéo
       const moveThreshold = e.pointerType === 'touch' ? 8 : 5;
       if (dist >= moveThreshold) {
         movedDuringPointerRef.current = true;
@@ -479,6 +583,13 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     if (activePointerIdRef.current === e.pointerId) {
       activePointerIdRef.current = null;
     }
+    clearLoupeHoldTimer();
+    const wasLoupeActive = isLoupeHoldingRef.current;
+    const wasEraseOnImage = erasePointerActiveOnImageRef.current;
+    isLoupeHoldingRef.current = false;
+    erasePointerActiveOnImageRef.current = false;
+    setLoupeState(null);
+
     const wasMoved = movedDuringPointerRef.current;
     const wasMultiTouch = wasMultiTouchRef.current;
     const downPos = pointerDownClientRef.current;
@@ -486,11 +597,15 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     movedDuringPointerRef.current = false;
     setIsPanning(false);
 
-    if (wasMultiTouch || pinchStateRef.current) {
+    if (e.type === 'pointercancel' || wasMultiTouch || pinchStateRef.current) {
       return;
     }
 
-    if (isEraserMode && !wasMoved && downPos) {
+    // Chế độ Xóa Click: Click nhanh -> xóa ngay; Nhấn giữ ngắm bằng Kính Lúp -> thả tay ra là xóa tại điểm ngắm
+    if (
+      isEraserMode &&
+      (wasLoupeActive || (!wasMoved && downPos && wasEraseOnImage))
+    ) {
       const coords = clientToImageCoords(e.clientX, e.clientY);
       if (coords) {
         setHoverImgCoords(coords);
@@ -581,9 +696,12 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 h-full bg-slate-100 dark:bg-slate-950 transition-colors">
-      {/* Thanh công cụ & chọn bước tương thích Mobile & Desktop */}
-      <div className="px-2 sm:px-3 py-1.5 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-1.5 flex-wrap transition-colors">
+    <div className="flex-1 flex flex-col min-w-0 h-full transition-colors">
+      {/* Thanh công cụ & chọn bước tương thích Mobile & Desktop (Apple Optical Lens) */}
+      <div
+        data-apple-lens="bar"
+        className="apple-lens-bar px-2 sm:px-3 py-1.5 border-b flex items-center justify-between gap-1.5 flex-wrap transition-colors relative z-20"
+      >
         <div className="flex items-center gap-1 overflow-x-auto max-w-full py-0.5 no-scrollbar">
           {STAGE_TABS.map((tab) => {
             const active = viewStage === tab.id;
@@ -593,10 +711,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 type="button"
                 onClick={() => onChangeStage(tab.id)}
                 title={tab.tip}
-                className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-medium transition shrink-0 cursor-pointer ${
+                className={`px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-medium shrink-0 cursor-pointer ${
                   active
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/80'
+                    ? 'apple-lens-btn-primary'
+                    : 'apple-lens-btn text-slate-700 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 {tab.label}
@@ -605,10 +723,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
           })}
         </div>
 
-        {/* Công cụ Xóa nền, Nền Caro & Zoom */}
-        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-auto">
+        {/* Công cụ Xóa nền, Nền Caro, Zoom & Nhóm nút History bên phải phần Zoom trên Mobile */}
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-auto max-w-full overflow-x-auto no-scrollbar py-0.5">
           {viewStage === 'wireframe' && (
-            <label className="flex items-center gap-1 text-[11px] sm:text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 px-2 py-1 rounded-md cursor-pointer">
+            <label className="apple-lens-pill flex items-center gap-1 text-[11px] sm:text-xs text-slate-700 dark:text-slate-200 px-2 py-1 rounded-lg cursor-pointer shrink-0">
               <input
                 type="checkbox"
                 checked={showNodesInWireframe}
@@ -624,10 +742,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             type="button"
             onClick={onToggleRemoveBackground}
             title="Tự động tách bỏ màu nền bên ngoài mà vẫn giữ nguyên 100% màu bên trong nhân vật"
-            className={`px-2 sm:px-2.5 py-1 rounded-md transition flex items-center gap-1 text-[11px] sm:text-xs font-medium cursor-pointer border ${
+            className={`px-2 sm:px-2.5 py-1 rounded-lg flex items-center gap-1 text-[11px] sm:text-xs font-medium cursor-pointer shrink-0 ${
               removeBackground
-                ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
-                : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700/80 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
+                ? 'apple-lens-btn-emerald'
+                : 'apple-lens-btn text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white'
             }`}
           >
             <Eraser
@@ -637,7 +755,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   : 'text-emerald-600 dark:text-emerald-400'
               }`}
             />
-            <span className="hidden xs:inline sm:inline">
+            <span className="hidden min-[380px]:inline sm:inline">
               {removeBackground ? 'Đã Bỏ Nền' : 'Bỏ Nền'}
             </span>
           </button>
@@ -647,10 +765,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             type="button"
             onClick={onToggleEraserMode}
             title="Xóa vùng chủ động (Phím E): Chạm hoặc Click vào đâu trên ảnh sẽ xóa mảng màu tại đó"
-            className={`px-2 sm:px-2.5 py-1 rounded-md transition flex items-center gap-1 text-[11px] sm:text-xs font-medium cursor-pointer border ${
+            className={`px-2 sm:px-2.5 py-1 rounded-lg flex items-center gap-1 text-[11px] sm:text-xs font-medium cursor-pointer shrink-0 ${
               isEraserMode
-                ? 'bg-rose-600 text-white border-rose-500 shadow-sm ring-2 ring-rose-400/40'
-                : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700/80 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
+                ? 'apple-lens-btn-rose ring-2 ring-rose-400/40'
+                : 'apple-lens-btn text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white'
             }`}
           >
             <MousePointerClick
@@ -660,13 +778,13 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   : 'text-rose-600 dark:text-rose-400'
               }`}
             />
-            <span>Xóa Click</span>
+            <span className="hidden min-[360px]:inline">Xóa Click</span>
             {manualEraseCount > 0 && (
               <span
                 className={`text-[10px] font-mono px-1 rounded ${
                   isEraserMode
-                    ? 'bg-rose-800 text-white'
-                    : 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                    ? 'bg-rose-900/80 text-white'
+                    : 'bg-rose-500/20 text-rose-600 dark:text-rose-300'
                 }`}
               >
                 {manualEraseCount}
@@ -688,16 +806,20 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               )
             }
             title="Đổi màu nền lưới Caro (Sáng/Tối)"
-            className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
+            className="apple-lens-btn p-1.5 rounded-lg text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white cursor-pointer shrink-0"
           >
             <Grid className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
           </button>
 
-          <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-md px-0.5 sm:px-1">
+          {/* Cụm điều khiển Zoom */}
+          <div
+            data-apple-lens="pill"
+            className="apple-lens-pill flex items-center rounded-xl px-0.5 sm:px-1 shrink-0"
+          >
             <button
               type="button"
               onClick={() => handleStepZoom(1 / 1.25)}
-              className="p-1 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white cursor-pointer"
+              className="p-1 text-slate-700 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-sky-300 cursor-pointer"
               title="Thu nhỏ"
             >
               <ZoomOut className="w-3.5 h-3.5" />
@@ -705,14 +827,14 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             <span
               onClick={handleResetView}
               title="Bấm để về 100%"
-              className="text-[11px] sm:text-xs font-mono text-slate-800 dark:text-slate-200 px-1 min-w-[42px] text-center cursor-pointer"
+              className="text-[11px] sm:text-xs font-mono text-slate-800 dark:text-slate-100 px-1 min-w-[40px] text-center cursor-pointer font-semibold"
             >
               {Math.round(zoom * 100)}%
             </span>
             <button
               type="button"
               onClick={() => handleStepZoom(1.25)}
-              className="p-1 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white cursor-pointer"
+              className="p-1 text-slate-700 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-sky-300 cursor-pointer"
               title="Phóng to"
             >
               <ZoomIn className="w-3.5 h-3.5" />
@@ -723,10 +845,51 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             type="button"
             onClick={handleResetView}
             title="Căn giữa khung hình (100%)"
-            className="p-1.5 rounded-md bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
+            className="hidden sm:inline-flex apple-lens-btn p-1.5 rounded-lg text-slate-700 dark:text-slate-200 hover:text-slate-950 dark:hover:text-white cursor-pointer shrink-0"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
+
+          {/* Nhóm nút History đặt bên phải phần Zoom trên Mobile (< md) */}
+          <div
+            data-apple-lens="pill"
+            data-history-trigger="true"
+            className="apple-lens-pill flex md:hidden items-center gap-0.5 p-0.5 rounded-xl shrink-0"
+          >
+            <button
+              type="button"
+              disabled={!canUndo}
+              onClick={onUndo}
+              title="Hoàn tác (Ctrl+Z)"
+              className="p-1 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-white/60 dark:hover:bg-slate-700/60 disabled:opacity-35 transition cursor-pointer disabled:cursor-not-allowed"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={!canRedo}
+              onClick={onRedo}
+              title="Làm lại (Ctrl+Y)"
+              className="p-1 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-white/60 dark:hover:bg-slate-700/60 disabled:opacity-35 transition cursor-pointer disabled:cursor-not-allowed"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={onToggleHistoryPopup}
+              title="Xem danh sách lịch sử các bước thao tác"
+              className={`px-1.5 py-0.5 rounded-lg text-[11px] font-medium flex items-center gap-1 transition cursor-pointer ${
+                showHistoryPopup
+                  ? 'apple-lens-btn-primary'
+                  : 'text-slate-700 dark:text-slate-200 hover:bg-white/60 dark:hover:bg-slate-700/60'
+              }`}
+            >
+              <History className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-300 shrink-0" />
+              <span className="text-[10px] font-mono">
+                {historyIndex + 1}/{historyCount}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -748,26 +911,40 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             : 'cursor-grab'
         }`}
       >
-        {/* Thanh điều khiển nổi khi bật Chế độ Xóa Chủ Động (tương thích màn hình nhỏ) */}
+        {/* Thanh điều khiển nổi Apple Optical Lens khi bật Chế độ Xóa Chủ Động */}
         {isEraserMode && (
-          <div
+          <OpticalGlass
             data-floating-bar="true"
             onPointerDown={(e) => e.stopPropagation()}
-            className="absolute top-2.5 left-1/2 -translate-x-1/2 z-30 max-w-[94vw] px-2.5 py-1.5 rounded-2xl sm:rounded-full bg-slate-900/92 dark:bg-slate-900/95 text-white border border-rose-500/50 shadow-xl backdrop-blur-md flex items-center justify-center gap-2 sm:gap-3 flex-wrap text-xs"
+            scale={-110}
+            chroma={6}
+            border={0.08}
+            mapBlur={10}
+            blur={10}
+            saturate={1.8}
+            borderRadius={999}
+            tintColor="#f43f5e"
+            tintOpacity={0.22}
+            baseColor="#0f172a"
+            baseOpacity={0.82}
+            highlightOpacity={0.5}
+            style={{ position: 'absolute' }}
+            className="top-2.5 left-1/2 -translate-x-1/2 z-30 max-w-[94vw] text-white text-xs"
+            contentClassName="px-3 py-1.5 flex items-center justify-center gap-2 sm:gap-3 flex-wrap"
           >
-            <span className="flex items-center gap-1 font-semibold text-rose-300">
+            <span className="flex items-center gap-1 font-semibold text-rose-200">
               <MousePointerClick className="w-3.5 h-3.5 text-rose-400 shrink-0" />
               <span className="text-[11px] sm:text-xs">
-                Chạm/Click vùng ảnh để xóa
+                Click: xóa ngay · Nhấn giữ: kính lúp
               </span>
               {hoverImgCoords && (
-                <span className="hidden sm:inline font-mono text-[10px] text-slate-300 bg-slate-800 px-1.5 py-0.2 rounded">
+                <span className="hidden sm:inline font-mono text-[10px] text-slate-200 bg-white/10 px-1.5 py-0.2 rounded-full">
                   ({hoverImgCoords.x}, {hoverImgCoords.y})
                 </span>
               )}
             </span>
 
-            <label className="flex items-center gap-1.5 text-[11px] text-slate-200">
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-100">
               <span>Độ lan:</span>
               <input
                 type="range"
@@ -780,7 +957,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 }
                 className="w-16 sm:w-20 accent-rose-500 cursor-pointer"
               />
-              <span className="font-mono text-rose-300 w-5 text-right">
+              <span className="font-mono text-rose-200 w-5 text-right">
                 {manualEraseTolerance}
               </span>
             </label>
@@ -791,7 +968,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 disabled={!canUndo}
                 onClick={onUndo}
                 title="Hoàn tác bước vừa xóa (Ctrl+Z / Cmd+Z)"
-                className="p-1 rounded hover:bg-slate-800 disabled:opacity-35 cursor-pointer disabled:cursor-not-allowed"
+                className="p-1 rounded-full hover:bg-white/15 disabled:opacity-35 cursor-pointer disabled:cursor-not-allowed"
               >
                 <Undo2 className="w-3.5 h-3.5" />
               </button>
@@ -800,7 +977,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 disabled={!canRedo}
                 onClick={onRedo}
                 title="Làm lại (Ctrl+Y / Cmd+Shift+Z)"
-                className="p-1 rounded hover:bg-slate-800 disabled:opacity-35 cursor-pointer disabled:cursor-not-allowed"
+                className="p-1 rounded-full hover:bg-white/15 disabled:opacity-35 cursor-pointer disabled:cursor-not-allowed"
               >
                 <Redo2 className="w-3.5 h-3.5" />
               </button>
@@ -808,12 +985,12 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 type="button"
                 onClick={onToggleEraserMode}
                 title="Thoát chế độ xóa chủ động (Esc)"
-                className="p-1 rounded-full bg-rose-600/80 hover:bg-rose-500 text-white transition cursor-pointer ml-0.5"
+                className="apple-lens-btn-rose p-1 rounded-full text-white cursor-pointer ml-0.5"
               >
                 <X className="w-3 h-3" />
               </button>
             </div>
-          </div>
+          </OpticalGlass>
         )}
 
         {result && (
@@ -831,7 +1008,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 : 'ring-1 ring-slate-900/10 dark:ring-white/15'
             }`}
           >
-            {/* Nhãn ẢNH GỐC / SVG đặt phía trên khung ảnh, bám theo vạch chia và giữ nguyên kích thước chữ ở mọi mức zoom */}
+            {/* Nhãn ẢNH GỐC / SVG dạng Apple Lens đặt phía trên khung ảnh */}
             {viewStage === 'split' && (
               <div
                 style={{
@@ -841,10 +1018,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 }}
                 className="absolute bottom-full mb-1.5 z-30 flex items-center gap-1.5 pointer-events-none select-none"
               >
-                <span className="whitespace-nowrap px-2 py-0.5 rounded bg-slate-900/90 text-[10px] font-semibold text-white border border-white/15 shadow-md">
+                <span className="apple-lens-pill whitespace-nowrap px-2.5 py-0.5 rounded-full text-[10px] font-semibold text-slate-800 dark:text-white">
                   ← ẢNH GỐC
                 </span>
-                <span className="whitespace-nowrap px-2 py-0.5 rounded bg-indigo-950/90 text-[10px] font-semibold text-indigo-100 border border-indigo-400/40 shadow-md">
+                <span className="apple-lens-btn-primary whitespace-nowrap px-2.5 py-0.5 rounded-full text-[10px] font-semibold text-white">
                   {embeddedImageUrl
                     ? 'SVG (nhúng ảnh) →'
                     : `SVG (${result.stats.totalPaths} lớp) →`}
@@ -852,7 +1029,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               </div>
             )}
 
-            {/* Thanh kéo chia đôi khung hình (Vùng chạm rộng 48px cho ngón tay, counter-scale theo zoom và tự dời nút tròn xuống đáy khi icon nhỏ) */}
+            {/* Thanh kéo chia đôi khung hình (Vùng chạm rộng 48px cho ngón tay) */}
             {viewStage === 'split' && (
               <div
                 data-split-handle="true"
@@ -880,7 +1057,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   }}
                   className={`absolute ${
                     displayH * zoom < 140 ? 'bottom-0' : 'top-1/2 -translate-y-1/2'
-                  } w-7 h-7 sm:w-6 sm:h-6 rounded-full bg-indigo-600 border-2 border-white shadow-lg flex items-center justify-center text-white group-hover:scale-110 active:scale-110 transition`}
+                  } apple-lens-btn-primary w-7 h-7 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-white group-hover:scale-110 active:scale-110 transition`}
                 >
                   <MoveHorizontal className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                 </div>
@@ -1140,7 +1317,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                         ? `inset(0 0 0 ${splitPercent}%)`
                         : undefined,
                   }}
-                  className={`absolute inset-0 z-10 pointer-events-none overflow-hidden transition-opacity duration-300 ${
+                  className={`absolute inset-0 z-10 isolate pointer-events-none overflow-hidden transition-opacity duration-300 ${
                     showShimmer ? 'opacity-100' : 'opacity-0'
                   }`}
                 >
@@ -1154,7 +1331,195 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
           </div>
         )}
 
-        {/* Huy hiệu trạng thái nổi khi đang kiến tạo Vector */}
+        {/* Kính lúp phóng đại dạng Apple Optical Lens hiện phía trên khi nhấn giữ ở Chế độ Xóa Click */}
+        {isEraserMode && loupeState && result && (() => {
+          const vpRect = viewportRef.current?.getBoundingClientRect();
+          const relX = vpRect ? loupeState.clientX - vpRect.left : 0;
+          const relY = vpRect ? loupeState.clientY - vpRect.top : 0;
+          const loupeSize = 136;
+          const halfLoupe = loupeSize / 2;
+          // Đặt kính lúp phía trên con trỏ/ngón tay 94px để không bị che khuất; nếu sát mép trên quá thì đẩy xuống dưới
+          const placeBelow = relY < loupeSize + 36;
+          const rawTop = placeBelow ? relY + 92 : relY - 94;
+          const clampedLeft = vpRect
+            ? Math.max(halfLoupe + 8, Math.min(vpRect.width - halfLoupe - 8, relX))
+            : relX;
+          const clampedTop = vpRect
+            ? Math.max(halfLoupe + 8, Math.min(vpRect.height - halfLoupe - 8, rawTop))
+            : rawTop;
+
+          // Tính cửa sổ phóng đại ~4x so với kích thước hiển thị hiện tại
+          const screenPxPerImgPx = Math.max(0.2, displayScale * zoom);
+          const patchSpan = Math.max(
+            8,
+            Math.min(Math.max(w, h) * 0.4, loupeSize / (screenPxPerImgPx * 3.8))
+          );
+          const halfSpan = patchSpan * 0.5;
+          const vbX = loupeState.imgX + 0.5 - halfSpan;
+          const vbY = loupeState.imgY + 0.5 - halfSpan;
+
+          // Đọc màu pixel tại điểm đang ngắm từ quantizedBuffer để hiển thị mẫu màu trực tiếp
+          const pxIdx = (loupeState.imgY * w + loupeState.imgX) * 4;
+          const qBuf = result.quantizedBuffer;
+          const rVal = qBuf[pxIdx] ?? 0;
+          const gVal = qBuf[pxIdx + 1] ?? 0;
+          const bVal = qBuf[pxIdx + 2] ?? 0;
+          const aVal = qBuf[pxIdx + 3] ?? 0;
+          const hexSample =
+            aVal < 20
+              ? 'Trong suốt'
+              : `#${rVal.toString(16).padStart(2, '0')}${gVal
+                  .toString(16)
+                  .padStart(2, '0')}${bVal
+                  .toString(16)
+                  .padStart(2, '0')}`.toUpperCase();
+
+          return (
+            <div
+              style={{
+                left: `${clampedLeft}px`,
+                top: `${clampedTop}px`,
+                width: `${loupeSize}px`,
+                height: `${loupeSize}px`,
+                transform: 'translate(-50%, -50%)',
+              }}
+              className="absolute z-40 pointer-events-none select-none"
+            >
+              {/* Vòng kính lúp tròn phóng đại với viền khúc xạ Apple Optical Lens */}
+              <div
+                style={{
+                  boxShadow:
+                    'inset 0 2.5px 4px rgba(255,255,255,0.9), inset 0 -10px 20px rgba(244,63,94,0.32), inset 0 0 0 2.5px rgba(255,255,255,0.78), 0 20px 44px -8px rgba(2,6,23,0.68), 0 0 0 1.5px rgba(244,63,94,0.72)',
+                }}
+                className={`relative w-full h-full rounded-full overflow-hidden ${
+                  useLightChecker ? 'checkerboard-light' : 'checkerboard'
+                }`}
+              >
+                <svg
+                  viewBox={`${vbX} ${vbY} ${patchSpan} ${patchSpan}`}
+                  width={loupeSize}
+                  height={loupeSize}
+                  className="block w-full h-full"
+                  shapeRendering="geometricPrecision"
+                >
+                  {(viewStage === 'original' || viewStage === 'split') &&
+                    originalDataUrl && (
+                      <image
+                        href={originalDataUrl}
+                        x={0}
+                        y={0}
+                        width={w}
+                        height={h}
+                        preserveAspectRatio="none"
+                        opacity={viewStage === 'original' ? 1 : 0.35}
+                        style={{ imageRendering: 'pixelated' }}
+                      />
+                    )}
+                  {viewStage !== 'original' && embeddedImageUrl ? (
+                    <image
+                      href={embeddedImageUrl}
+                      x={0}
+                      y={0}
+                      width={w}
+                      height={h}
+                      preserveAspectRatio="none"
+                    />
+                  ) : null}
+                  {viewStage !== 'original' &&
+                    !embeddedImageUrl &&
+                    result.paths.map((p) =>
+                      p.isStroke ? (
+                        <path
+                          key={p.colorId}
+                          fill="none"
+                          stroke={p.hex}
+                          strokeWidth={p.strokeWidth ?? 2.5}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d={p.d}
+                        />
+                      ) : (
+                        <path
+                          key={p.colorId}
+                          fill={p.hex}
+                          fillOpacity={p.opacity}
+                          stroke={
+                            seamWidth > 0 && p.opacity === undefined
+                              ? p.hex
+                              : undefined
+                          }
+                          strokeWidth={
+                            seamWidth > 0 && p.opacity === undefined
+                              ? seamWidth
+                              : undefined
+                          }
+                          strokeLinejoin={
+                            seamWidth > 0 && p.opacity === undefined
+                              ? 'round'
+                              : undefined
+                          }
+                          strokeLinecap={
+                            seamWidth > 0 && p.opacity === undefined
+                              ? 'round'
+                              : undefined
+                          }
+                          fillRule="evenodd"
+                          d={p.d}
+                        />
+                      )
+                    )}
+                  {/* Ô pixel mục tiêu tại đúng tâm ngắm */}
+                  <rect
+                    x={loupeState.imgX}
+                    y={loupeState.imgY}
+                    width={1}
+                    height={1}
+                    fill="rgba(244, 63, 94, 0.28)"
+                    stroke="#f43f5e"
+                    strokeWidth={(patchSpan / loupeSize) * 1.5}
+                  />
+                </svg>
+
+                {/* Lưới chữ thập (Crosshair Reticle) & bóng phản quang vòm kính Apple Lens */}
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                  <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-rose-500/65" />
+                  <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-rose-500/65" />
+                  <div className="w-4 h-4 rounded-full border-2 border-rose-500 bg-rose-500/15 shadow-[0_0_8px_rgba(244,63,94,0.9)]" />
+                </div>
+                <div
+                  style={{
+                    background:
+                      'linear-gradient(155deg, rgba(255,255,255,0.42) 0%, rgba(255,255,255,0.08) 32%, transparent 55%)',
+                  }}
+                  className="absolute inset-0 pointer-events-none rounded-full"
+                />
+              </div>
+
+              {/* Nhãn hiển thị mẫu màu & tọa độ bên dưới vành kính lúp */}
+              <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 apple-lens-pill px-2 py-0.5 rounded-full flex items-center gap-1.5 text-[10px] font-mono font-semibold text-slate-900 dark:text-white whitespace-nowrap shadow-lg">
+                <span
+                  style={{
+                    backgroundColor: aVal < 20 ? 'transparent' : hexSample,
+                  }}
+                  className="w-2.5 h-2.5 rounded-full border border-white/80 shadow-sm shrink-0"
+                />
+                <span>{hexSample}</span>
+                <span className="text-rose-500 dark:text-rose-300">
+                  ({loupeState.imgX},{loupeState.imgY})
+                </span>
+              </div>
+
+              {/* Mũi kim chỉ từ kính lúp xuống điểm chạm thực tế */}
+              <div
+                className={`absolute left-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-rose-500 border border-white/80 shadow ${
+                  placeBelow ? '-top-1' : '-bottom-1'
+                }`}
+              />
+            </div>
+          );
+        })()}
+
+        {/* Huy hiệu trạng thái nổi dạng Apple Optical Lens khi đang kiến tạo Vector */}
         {viewStage !== 'original' && (
           <div
             aria-live="polite"
@@ -1164,27 +1529,57 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 : 'opacity-0 -translate-y-2 scale-95'
             }`}
           >
-            <div className="px-3 py-1.5 rounded-full bg-slate-900/85 dark:bg-slate-900/90 backdrop-blur-md border border-indigo-400/40 shadow-[0_0_25px_rgba(99,102,241,0.45)] flex items-center gap-2">
+            <OpticalGlass
+              scale={-96}
+              chroma={6}
+              border={0.09}
+              mapBlur={9}
+              blur={8}
+              saturate={1.8}
+              borderRadius={999}
+              tintColor="#6366f1"
+              tintOpacity={0.25}
+              baseColor="#0f172a"
+              baseOpacity={0.82}
+              highlightOpacity={0.5}
+              contentClassName="px-3 py-1.5 flex items-center gap-2"
+            >
               <Sparkles className="w-3.5 h-3.5 text-fuchsia-400 ai-sparkle-icon shrink-0" />
               <span className="text-xs font-semibold bg-gradient-to-r from-indigo-200 via-fuchsia-200 to-sky-200 bg-clip-text text-transparent">
                 Đang kiến tạo Vector SVG...
               </span>
-            </div>
+            </OpticalGlass>
           </div>
         )}
 
-        {/* Chú thích gọn gàng cho chế độ Wireframe */}
+        {/* Chú thích dạng Apple Optical Lens cho chế độ Wireframe */}
         {viewStage === 'wireframe' && (
-          <div className="absolute bottom-3 left-4 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700/80 rounded-lg px-2.5 py-1.5 text-[11px] flex items-center gap-3 shadow-lg">
-            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-200">
+          <OpticalGlass
+            scale={-92}
+            chroma={5}
+            border={0.08}
+            mapBlur={9}
+            blur={8}
+            saturate={1.65}
+            borderRadius={12}
+            tintColor="#38bdf8"
+            tintOpacity={0.18}
+            baseColor={isDarkTheme ? '#0f172a' : '#ffffff'}
+            baseOpacity={0.78}
+            highlightOpacity={0.48}
+            style={{ position: 'absolute' }}
+            className="bottom-3 left-4 z-20 text-[11px]"
+            contentClassName="px-2.5 py-1.5 flex items-center gap-3"
+          >
+            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-100">
               <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
               Smooth Node
             </span>
-            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-200">
+            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-100">
               <span className="w-2 h-2 bg-amber-500 inline-block" />
               Corner Node
             </span>
-            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-200">
+            <span className="flex items-center gap-1 text-slate-800 dark:text-slate-100">
               <span className="w-3 h-0.5 bg-sky-400 inline-block" />
               1-Line Spine
             </span>
@@ -1193,7 +1588,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               title="Chú thích Khung Dây (Wireframe)"
               content="Chấm tròn xanh là điểm uốn cong mượt Bézier. Ô vuông vàng là đỉnh góc nhọn. Đường xanh dương là trục tâm của nét đơn Centerline."
             />
-          </div>
+          </OpticalGlass>
         )}
       </div>
     </div>
