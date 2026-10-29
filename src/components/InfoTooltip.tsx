@@ -118,7 +118,10 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
     };
   }, [isOpen, updatePosition]);
 
+  const isTouchPointerRef = useRef(false);
+
   const handleMouseEnter = () => {
+    if (isTouchPointerRef.current) return;
     clearTimers();
     if (isOpen) return;
     openTimerRef.current = window.setTimeout(() => {
@@ -127,6 +130,7 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
   };
 
   const handleMouseLeave = () => {
+    if (isTouchPointerRef.current) return;
     clearTimers();
     if (isPinned) return;
     closeTimerRef.current = window.setTimeout(() => {
@@ -141,14 +145,21 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
         type="button"
         aria-describedby={isOpen ? tooltipId : undefined}
         aria-expanded={isOpen}
+        onPointerDown={(e) => {
+          isTouchPointerRef.current = e.pointerType === 'touch';
+        }}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
-        onFocus={handleMouseEnter}
-        onBlur={handleMouseLeave}
+        onFocus={() => {
+          if (!isTouchPointerRef.current) handleMouseEnter();
+        }}
+        onBlur={() => {
+          if (!isTouchPointerRef.current) handleMouseLeave();
+        }}
         onClick={(e) => {
           e.stopPropagation();
           clearTimers();
-          if (isPinned) {
+          if (isPinned || (isTouchPointerRef.current && isOpen)) {
             setIsPinned(false);
             setIsOpen(false);
           } else {
@@ -156,12 +167,12 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
             setIsOpen(true);
           }
         }}
-        className={`inline-flex items-center justify-center rounded-full transition cursor-pointer focus:outline-none ${
+        className={`inline-flex items-center justify-center rounded-full transition cursor-pointer touch-manipulation focus:outline-none ${
           children
             ? ''
             : isPinned
-            ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-500/15 p-0.5'
-            : 'text-slate-400 hover:text-indigo-600 dark:text-slate-500 dark:hover:text-indigo-400 p-0.5'
+            ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-500/15 p-1 -m-0.5'
+            : 'text-slate-400 hover:text-indigo-600 dark:text-slate-500 dark:hover:text-indigo-400 p-1 -m-0.5'
         }`}
       >
         {children ?? <HelpCircle className="w-3.5 h-3.5" />}
@@ -176,7 +187,7 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
             style={{ top: coords.top, left: coords.left }}
-            className={`fixed z-[100] ${widthClass} p-2.5 rounded-lg bg-slate-900/95 dark:bg-slate-800/95 text-slate-100 border border-slate-700/80 shadow-xl backdrop-blur-md text-[11px] leading-relaxed select-none animate-in fade-in duration-150`}
+            className={`fixed z-[100] ${widthClass} max-w-[92vw] p-2.5 rounded-lg bg-slate-900/95 dark:bg-slate-800/95 text-slate-100 border border-slate-700/80 shadow-xl backdrop-blur-md text-[11px] leading-relaxed select-none animate-in fade-in duration-150`}
           >
             {title && (
               <div className="font-semibold text-indigo-300 mb-1 flex items-center justify-between gap-2">

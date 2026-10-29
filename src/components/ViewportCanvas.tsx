@@ -113,6 +113,10 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     y: number;
     key: number;
   } | null>(null);
+  const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({
+    w: 800,
+    h: 600,
+  });
 
   const viewStateRef = useRef<{ zoom: number; pan: { x: number; y: number } }>({
     zoom: 1,
@@ -122,6 +126,20 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const pointerDownClientRef = useRef<{ x: number; y: number } | null>(null);
   const movedDuringPointerRef = useRef<boolean>(false);
+  const activePointerIdRef = useRef<number | null>(null);
+  const wasMultiTouchRef = useRef<boolean>(false);
+  const lastTapRef = useRef<{ time: number; x: number; y: number }>({
+    time: 0,
+    x: 0,
+    y: 0,
+  });
+  const pinchStateRef = useRef<{
+    dist: number;
+    zoom: number;
+    pan: { x: number; y: number };
+    midX: number;
+    midY: number;
+  } | null>(null);
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const smoothedCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const quantizedCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -131,7 +149,23 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     viewStateRef.current = { zoom, pan };
   }, [zoom, pan]);
 
-  // Zoom tại đúng vị trí con trỏ chuột (Zoom-to-Cursor)
+  // Đo kích thước thực tế của vùng chứa (Viewport) để tự động co khung ảnh vừa màn hình Mobile/Tablet
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setViewportSize({ w: rect.width, h: rect.height });
+      }
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Zoom tại đúng vị trí con trỏ chuột (Zoom-to-Cursor) & Cảm ứng đa điểm (Pinch-to-Zoom + 2-Finger Pan)
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -173,8 +207,107 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       setPan(newPan);
     };
 
+    const startPinchFromTouches = (touches: TouchList) => {
+      const t0 = touches[0];
+      const t1 = touches[1];
+      const dist = Math.hypot(
+        t1.clientX - t0.clientX,
+        t1.clientY - t0.clientY
+      );
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width * 0.5;
+      const cy = rect.top + rect.height * 0.5;
+      pinchStateRef.current = {
+        dist: Math.max(12, dist),
+        zoom: viewStateRef.current.zoom,
+        pan: { ...viewStateRef.current.pan },
+        midX: (t0.clientX + t1.clientX) * 0.5 - cx,
+        midY: (t0.clientY + t1.clientY) * 0.5 - cy,
+      };
+      wasMultiTouchRef.current = true;
+      movedDuringPointerRef.current = true;
+      setIsPanning(false);
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        startPinchFromTouches(e.touches);
+      } else if (e.touches.length === 1) {
+        wasMultiTouchRef.current = false;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        e.preventDefault();
+        if (!pinchStateRef.current) {
+          startPinchFromTouches(e.touches);
+          return;
+        }
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        const dist = Math.hypot(
+          t1.clientX - t0.clientX,
+          t1.clientY - t0.clientY
+        );
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width * 0.5;
+        const cy = rect.top + rect.height * 0.5;
+        const curMidX = (t0.clientX + t1.clientX) * 0.5 - cx;
+        const curMidY = (t0.clientY + t1.clientY) * 0.5 - cy;
+
+        const {
+          dist: startDist,
+          zoom: startZoom,
+          pan: startPan,
+          midX: startMidX,
+          midY: startMidY,
+        } = pinchStateRef.current;
+
+        const newZoom = Math.max(
+          0.25,
+          Math.min(16, +(startZoom * (dist / startDist)).toFixed(3))
+        );
+        const scaleRatio = newZoom / startZoom;
+        const newPan = {
+          x: curMidX - (startMidX - startPan.x) * scaleRatio,
+          y: curMidY - (startMidY - startPan.y) * scaleRatio,
+        };
+
+        viewStateRef.current = { zoom: newZoom, pan: newPan };
+        setZoom(newZoom);
+        setPan(newPan);
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        pinchStateRef.current = null;
+      }
+      // Khi nhấc bớt 1 ngón tay (còn 1 ngón trên màn hình), cập nhật lại mốc panStart
+      // để ngón còn lại kéo tiếp mượt mà không bị nhảy vị trí khung hình
+      if (e.touches.length === 1) {
+        const remaining = e.touches[0];
+        panStartRef.current = {
+          x: remaining.clientX - viewStateRef.current.pan.x,
+          y: remaining.clientY - viewStateRef.current.pan.y,
+        };
+        movedDuringPointerRef.current = true;
+      }
+    };
+
     el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
+    el.addEventListener('touchstart', handleTouchStart, { passive: true });
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('touchend', handleTouchEnd);
+    el.addEventListener('touchcancel', handleTouchEnd);
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+      el.removeEventListener('touchstart', handleTouchStart);
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('touchend', handleTouchEnd);
+      el.removeEventListener('touchcancel', handleTouchEnd);
+    };
   }, []);
 
   // Duy trì hiệu ứng óng ánh (Shimmer) tối thiểu 420ms
@@ -232,10 +365,17 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
 
   const w = result?.width || 520;
   const h = result?.height || 520;
-  // Ảnh xử lý ở độ phân giải cao vẫn hiển thị cùng khổ như ảnh 1024px để mức zoom % không đổi ý nghĩa
-  const displayScale = Math.min(1, 1024 / Math.max(w, h));
-  const displayW = Math.round(w * displayScale);
-  const displayH = Math.round(h * displayScale);
+  // Tự động co khung hiển thị vừa khít cả màn hình Desktop lẫn Mobile nhỏ ở mức 100% zoom
+  const availW = Math.max(180, viewportSize.w - 28);
+  const availH = Math.max(180, viewportSize.h - 64);
+  const displayScale = Math.min(
+    1,
+    1024 / Math.max(w, h),
+    availW / w,
+    availH / h
+  );
+  const displayW = Math.max(32, Math.round(w * displayScale));
+  const displayH = Math.max(32, Math.round(h * displayScale));
   const seamWidth = result ? getSeamStrokeWidth(result.paths.length) : 0;
 
   const clientToImageCoords = (
@@ -272,7 +412,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   };
 
   const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || pinchStateRef.current) return;
     const target = e.target as HTMLElement;
     if (
       target.closest(
@@ -282,6 +422,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
       return;
     }
 
+    activePointerIdRef.current = e.pointerId;
     pointerDownClientRef.current = { x: e.clientX, y: e.clientY };
     movedDuringPointerRef.current = false;
     panStartRef.current = {
@@ -291,22 +432,34 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     if (!isEraserMode) {
       setIsPanning(true);
     }
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore if pointer capture is unsupported
+    }
   };
 
   const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isEraserMode) {
+    if (pinchStateRef.current) return;
+    if (isEraserMode && e.pointerType !== 'touch') {
       setHoverImgCoords(clientToImageCoords(e.clientX, e.clientY));
     }
 
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    if (
+      activePointerIdRef.current !== e.pointerId ||
+      !e.currentTarget.hasPointerCapture(e.pointerId)
+    ) {
+      return;
+    }
 
     if (pointerDownClientRef.current) {
       const dist = Math.hypot(
         e.clientX - pointerDownClientRef.current.x,
         e.clientY - pointerDownClientRef.current.y
       );
-      if (dist >= 5) {
+      // Ngưỡng di chuyển trên màn hình cảm ứng (8px) lớn hơn chuột (5px) để chạm nhẹ không bị tính nhầm là kéo
+      const moveThreshold = e.pointerType === 'touch' ? 8 : 5;
+      if (dist >= moveThreshold) {
         movedDuringPointerRef.current = true;
         if (!isPanning) setIsPanning(true);
       }
@@ -323,20 +476,65 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   };
 
   const handleViewportPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activePointerIdRef.current === e.pointerId) {
+      activePointerIdRef.current = null;
+    }
     const wasMoved = movedDuringPointerRef.current;
+    const wasMultiTouch = wasMultiTouchRef.current;
     const downPos = pointerDownClientRef.current;
     pointerDownClientRef.current = null;
     movedDuringPointerRef.current = false;
     setIsPanning(false);
 
+    if (wasMultiTouch || pinchStateRef.current) {
+      return;
+    }
+
     if (isEraserMode && !wasMoved && downPos) {
       const coords = clientToImageCoords(e.clientX, e.clientY);
       if (coords) {
+        setHoverImgCoords(coords);
         setClickRipple({ x: coords.x, y: coords.y, key: Date.now() });
         if (viewStage === 'original') {
           onChangeStage('split');
         }
         onEraseAtPoint(coords.x, coords.y);
+      }
+      return;
+    }
+
+    // Hỗ trợ Chạm đúp (Double-Tap) trên màn hình cảm ứng để Phóng to 2.5x tại điểm chạm hoặc thu về 100%
+    if (e.pointerType === 'touch' && !wasMoved && !isEraserMode) {
+      const now = performance.now();
+      const prev = lastTapRef.current;
+      const dt = now - prev.time;
+      const dist = Math.hypot(e.clientX - prev.x, e.clientY - prev.y);
+      if (dt > 40 && dt < 320 && dist < 32) {
+        lastTapRef.current = { time: 0, x: 0, y: 0 };
+        const el = viewportRef.current;
+        if (el) {
+          const { zoom: oldZoom, pan: oldPan } = viewStateRef.current;
+          if (Math.abs(oldZoom - 1) > 0.08) {
+            handleResetView();
+          } else {
+            const rect = el.getBoundingClientRect();
+            const cx = rect.left + rect.width * 0.5;
+            const cy = rect.top + rect.height * 0.5;
+            const mx = e.clientX - cx;
+            const my = e.clientY - cy;
+            const newZoom = 2.5;
+            const scaleRatio = newZoom / oldZoom;
+            const newPan = {
+              x: mx - (mx - oldPan.x) * scaleRatio,
+              y: my - (my - oldPan.y) * scaleRatio,
+            };
+            viewStateRef.current = { zoom: newZoom, pan: newPan };
+            setZoom(newZoom);
+            setPan(newPan);
+          }
+        }
+      } else {
+        lastTapRef.current = { time: now, x: e.clientX, y: e.clientY };
       }
     }
   };
@@ -351,9 +549,13 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
   const handleSplitHandlePointerDown = (
     e: React.PointerEvent<HTMLDivElement>
   ) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || pinchStateRef.current) return;
     e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
     updateSplitFromClientX(e.clientX);
   };
 
@@ -365,11 +567,24 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
     updateSplitFromClientX(e.clientX);
   };
 
+  const handleSplitHandlePointerUp = (
+    e: React.PointerEvent<HTMLDivElement>
+  ) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+    e.stopPropagation();
+  };
+
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full bg-slate-100 dark:bg-slate-950 transition-colors">
-      {/* Thanh công cụ & chọn bước tinh gọn */}
-      <div className="px-3 py-1.5 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap transition-colors">
-        <div className="flex items-center gap-1 overflow-x-auto py-0.5">
+      {/* Thanh công cụ & chọn bước tương thích Mobile & Desktop */}
+      <div className="px-2 sm:px-3 py-1.5 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-1.5 flex-wrap transition-colors">
+        <div className="flex items-center gap-1 overflow-x-auto max-w-full py-0.5 no-scrollbar">
           {STAGE_TABS.map((tab) => {
             const active = viewStage === tab.id;
             return (
@@ -378,7 +593,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 type="button"
                 onClick={() => onChangeStage(tab.id)}
                 title={tab.tip}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition shrink-0 cursor-pointer ${
+                className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-medium transition shrink-0 cursor-pointer ${
                   active
                     ? 'bg-indigo-600 text-white shadow-sm'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/80'
@@ -391,9 +606,9 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
         </div>
 
         {/* Công cụ Xóa nền, Nền Caro & Zoom */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-auto">
           {viewStage === 'wireframe' && (
-            <label className="flex items-center gap-1 text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 px-2 py-1 rounded-md cursor-pointer">
+            <label className="flex items-center gap-1 text-[11px] sm:text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 px-2 py-1 rounded-md cursor-pointer">
               <input
                 type="checkbox"
                 checked={showNodesInWireframe}
@@ -409,41 +624,43 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             type="button"
             onClick={onToggleRemoveBackground}
             title="Tự động tách bỏ màu nền bên ngoài mà vẫn giữ nguyên 100% màu bên trong nhân vật"
-            className={`px-2.5 py-1 rounded-md transition flex items-center gap-1 text-xs font-medium cursor-pointer border ${
+            className={`px-2 sm:px-2.5 py-1 rounded-md transition flex items-center gap-1 text-[11px] sm:text-xs font-medium cursor-pointer border ${
               removeBackground
                 ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
                 : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700/80 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
             <Eraser
-              className={`w-3.5 h-3.5 ${
+              className={`w-3.5 h-3.5 shrink-0 ${
                 removeBackground
                   ? 'text-white'
                   : 'text-emerald-600 dark:text-emerald-400'
               }`}
             />
-            <span>{removeBackground ? 'Đã Bỏ Nền' : 'Bỏ Nền Tự Động'}</span>
+            <span className="hidden xs:inline sm:inline">
+              {removeBackground ? 'Đã Bỏ Nền' : 'Bỏ Nền'}
+            </span>
           </button>
 
-          {/* Nút Xóa Vùng Chủ Động (Click chuột) */}
+          {/* Nút Xóa Vùng Chủ Động (Click chuột / Chạm) */}
           <button
             type="button"
             onClick={onToggleEraserMode}
-            title="Xóa vùng chủ động (Phím E): Đổi con trỏ sang tâm ngắm — Click vào đâu trên ảnh sẽ xóa mảng màu tại đó"
-            className={`px-2.5 py-1 rounded-md transition flex items-center gap-1 text-xs font-medium cursor-pointer border ${
+            title="Xóa vùng chủ động (Phím E): Chạm hoặc Click vào đâu trên ảnh sẽ xóa mảng màu tại đó"
+            className={`px-2 sm:px-2.5 py-1 rounded-md transition flex items-center gap-1 text-[11px] sm:text-xs font-medium cursor-pointer border ${
               isEraserMode
                 ? 'bg-rose-600 text-white border-rose-500 shadow-sm ring-2 ring-rose-400/40'
                 : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200/80 dark:border-slate-700/80 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
             <MousePointerClick
-              className={`w-3.5 h-3.5 ${
+              className={`w-3.5 h-3.5 shrink-0 ${
                 isEraserMode
                   ? 'text-white'
                   : 'text-rose-600 dark:text-rose-400'
               }`}
             />
-            <span>Xóa Chủ Động</span>
+            <span>Xóa Click</span>
             {manualEraseCount > 0 && (
               <span
                 className={`text-[10px] font-mono px-1 rounded ${
@@ -476,7 +693,7 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             <Grid className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
           </button>
 
-          <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-md px-1">
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-md px-0.5 sm:px-1">
             <button
               type="button"
               onClick={() => handleStepZoom(1 / 1.25)}
@@ -487,8 +704,8 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             </button>
             <span
               onClick={handleResetView}
-              title="Bấm để về 100% (Lăn chuột để Zoom tại vị trí con trỏ)"
-              className="text-xs font-mono text-slate-800 dark:text-slate-200 px-1.5 min-w-[46px] text-center cursor-pointer"
+              title="Bấm để về 100%"
+              className="text-[11px] sm:text-xs font-mono text-slate-800 dark:text-slate-200 px-1 min-w-[42px] text-center cursor-pointer"
             >
               {Math.round(zoom * 100)}%
             </span>
@@ -531,24 +748,24 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
             : 'cursor-grab'
         }`}
       >
-        {/* Thanh điều khiển nổi khi bật Chế độ Xóa Chủ Động */}
+        {/* Thanh điều khiển nổi khi bật Chế độ Xóa Chủ Động (tương thích màn hình nhỏ) */}
         {isEraserMode && (
           <div
             data-floating-bar="true"
             onPointerDown={(e) => e.stopPropagation()}
-            className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-full bg-slate-900/90 dark:bg-slate-900/95 text-white border border-rose-500/50 shadow-xl backdrop-blur-md flex items-center gap-3 text-xs"
+            className="absolute top-2.5 left-1/2 -translate-x-1/2 z-30 max-w-[94vw] px-2.5 py-1.5 rounded-2xl sm:rounded-full bg-slate-900/92 dark:bg-slate-900/95 text-white border border-rose-500/50 shadow-xl backdrop-blur-md flex items-center justify-center gap-2 sm:gap-3 flex-wrap text-xs"
           >
-            <span className="flex items-center gap-1.5 font-semibold text-rose-300">
-              <MousePointerClick className="w-3.5 h-3.5 text-rose-400" />
-              <span>Click vào vùng ảnh để xóa</span>
+            <span className="flex items-center gap-1 font-semibold text-rose-300">
+              <MousePointerClick className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="text-[11px] sm:text-xs">
+                Chạm/Click vùng ảnh để xóa
+              </span>
               {hoverImgCoords && (
-                <span className="font-mono text-[10px] text-slate-300 bg-slate-800 px-1.5 py-0.2 rounded">
+                <span className="hidden sm:inline font-mono text-[10px] text-slate-300 bg-slate-800 px-1.5 py-0.2 rounded">
                   ({hoverImgCoords.x}, {hoverImgCoords.y})
                 </span>
               )}
             </span>
-
-            <div className="h-3.5 w-px bg-slate-700" />
 
             <label className="flex items-center gap-1.5 text-[11px] text-slate-200">
               <span>Độ lan:</span>
@@ -561,14 +778,12 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                 onChange={(e) =>
                   onChangeManualEraseTolerance(Number(e.target.value))
                 }
-                className="w-20 accent-rose-500 cursor-pointer"
+                className="w-16 sm:w-20 accent-rose-500 cursor-pointer"
               />
               <span className="font-mono text-rose-300 w-5 text-right">
                 {manualEraseTolerance}
               </span>
             </label>
-
-            <div className="h-3.5 w-px bg-slate-700" />
 
             <div className="flex items-center gap-1">
               <button
@@ -589,16 +804,15 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               >
                 <Redo2 className="w-3.5 h-3.5" />
               </button>
+              <button
+                type="button"
+                onClick={onToggleEraserMode}
+                title="Thoát chế độ xóa chủ động (Esc)"
+                className="p-1 rounded-full bg-rose-600/80 hover:bg-rose-500 text-white transition cursor-pointer ml-0.5"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
-
-            <button
-              type="button"
-              onClick={onToggleEraserMode}
-              title="Thoát chế độ xóa chủ động (Esc)"
-              className="p-1 rounded-full bg-rose-600/80 hover:bg-rose-500 text-white transition cursor-pointer"
-            >
-              <X className="w-3 h-3" />
-            </button>
           </div>
         )}
 
@@ -638,16 +852,18 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
               </div>
             )}
 
-            {/* Thanh kéo chia đôi khung hình (Counter-scale theo zoom và tự dời nút tròn xuống đáy khi icon nhỏ) */}
+            {/* Thanh kéo chia đôi khung hình (Vùng chạm rộng 48px cho ngón tay, counter-scale theo zoom và tự dời nút tròn xuống đáy khi icon nhỏ) */}
             {viewStage === 'split' && (
               <div
                 data-split-handle="true"
                 onPointerDown={handleSplitHandlePointerDown}
                 onPointerMove={handleSplitHandlePointerMove}
+                onPointerUp={handleSplitHandlePointerUp}
+                onPointerCancel={handleSplitHandlePointerUp}
                 style={{
                   left: `${splitPercent}%`,
-                  width: `${Math.max(24, 32 / zoom)}px`,
-                  marginLeft: `-${Math.max(12, 16 / zoom)}px`,
+                  width: `${Math.max(44, 48 / zoom)}px`,
+                  marginLeft: `-${Math.max(22, 24 / zoom)}px`,
                 }}
                 className="absolute top-0 bottom-0 z-30 flex items-center justify-center cursor-ew-resize no-select-drag group"
               >
@@ -664,9 +880,9 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                   }}
                   className={`absolute ${
                     displayH * zoom < 140 ? 'bottom-0' : 'top-1/2 -translate-y-1/2'
-                  } w-6 h-6 rounded-full bg-indigo-600 border-2 border-white shadow-lg flex items-center justify-center text-white group-hover:scale-110 transition`}
+                  } w-7 h-7 sm:w-6 sm:h-6 rounded-full bg-indigo-600 border-2 border-white shadow-lg flex items-center justify-center text-white group-hover:scale-110 active:scale-110 transition`}
                 >
-                  <MoveHorizontal className="w-3 h-3" />
+                  <MoveHorizontal className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                 </div>
               </div>
             )}

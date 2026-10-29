@@ -119,7 +119,7 @@ export const PaletteManager: React.FC<PaletteManagerProps> = ({
                   setMergeSourceId(null);
                 }
               }}
-              className={`flex items-center gap-1.5 px-2 py-1 rounded-md border transition shrink-0 ${
+              className={`flex items-center gap-1.5 px-2 py-1 sm:py-1 rounded-md border transition shrink-0 touch-manipulation ${
                 isMergingThis
                   ? 'border-amber-500 bg-amber-500/10'
                   : isMergeCandidate
@@ -130,7 +130,7 @@ export const PaletteManager: React.FC<PaletteManagerProps> = ({
               }`}
             >
               <label
-                className="relative w-5 h-5 rounded border border-slate-300 dark:border-white/20 shadow-inner cursor-pointer shrink-0 overflow-hidden"
+                className="relative w-6 h-6 sm:w-5 sm:h-5 rounded border border-slate-300 dark:border-white/20 shadow-inner cursor-pointer shrink-0 overflow-hidden touch-manipulation"
                 title={`Đổi màu ${col.hex} (${col.percentage.toFixed(1)}%)`}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -179,12 +179,12 @@ export const PaletteManager: React.FC<PaletteManagerProps> = ({
                   type="button"
                   onClick={() => onToggleVisibility(col.id, col.visible)}
                   title={col.visible ? 'Ẩn lớp màu này' : 'Hiện lớp màu này'}
-                  className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition cursor-pointer"
+                  className="p-1.5 sm:p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 active:bg-slate-200 dark:active:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition cursor-pointer touch-manipulation"
                 >
                   {col.visible ? (
-                    <Eye className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                    <Eye className="w-3.5 h-3.5 sm:w-3 sm:h-3 text-emerald-600 dark:text-emerald-400" />
                   ) : (
-                    <EyeOff className="w-3 h-3 text-rose-500 dark:text-rose-400" />
+                    <EyeOff className="w-3.5 h-3.5 sm:w-3 sm:h-3 text-rose-500 dark:text-rose-400" />
                   )}
                 </button>
 
@@ -195,13 +195,13 @@ export const PaletteManager: React.FC<PaletteManagerProps> = ({
                       setMergeSourceId(isMergingThis ? null : col.id)
                     }
                     title="Gộp lớp màu này vào lớp khác"
-                    className={`p-0.5 rounded transition cursor-pointer ${
+                    className={`p-1.5 sm:p-1 rounded transition cursor-pointer touch-manipulation ${
                       isMergingThis
                         ? 'bg-amber-500 text-slate-950'
-                        : 'hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300'
+                        : 'hover:bg-slate-200 dark:hover:bg-slate-800 active:bg-slate-200 dark:active:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300'
                     }`}
                   >
-                    <GitMerge className="w-3 h-3" />
+                    <GitMerge className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                   </button>
                 )}
               </div>

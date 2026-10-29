@@ -14,6 +14,7 @@ import {
   Redo2,
   History,
   Trash2,
+  Sliders,
 } from 'lucide-react';
 import {
   MAX_ORIGINAL_PROCESSING_DIMENSION,
@@ -118,6 +119,7 @@ export const App: React.FC = () => {
   >({});
   const [viewStage, setViewStage] = useState<ViewStage>('split');
   const [isEraserMode, setIsEraserMode] = useState<boolean>(false);
+  const [isMobilePanelOpen, setIsMobilePanelOpen] = useState<boolean>(false);
 
   // Quản lý Lịch sử thao tác (Undo / Redo / History Timeline)
   const [history, setHistory] = useState<HistoryEntry[]>(() => [
@@ -330,12 +332,20 @@ export const App: React.FC = () => {
       if (e.key === 'Escape') {
         if (showHistoryPopup) setShowHistoryPopup(false);
         else if (showSvgCodeModal) setShowSvgCodeModal(false);
+        else if (isMobilePanelOpen) setIsMobilePanelOpen(false);
         else if (isEraserMode) setIsEraserMode(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, isEraserMode, showHistoryPopup, showSvgCodeModal]);
+  }, [
+    handleUndo,
+    handleRedo,
+    isEraserMode,
+    isMobilePanelOpen,
+    showHistoryPopup,
+    showSvgCodeModal,
+  ]);
 
   const applySchemeToMeta = useCallback((stored: 'light' | 'dark' | null) => {
     const meta = document.querySelector<HTMLMetaElement>(
@@ -709,17 +719,28 @@ export const App: React.FC = () => {
         const file = e.dataTransfer.files?.[0];
         if (file) handleFileSelected(file);
       }}
-      className="h-screen w-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden transition-colors"
+      className="h-[100dvh] w-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden transition-colors"
     >
       {/* Top Navbar tối giản */}
-      <header className="h-12 shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3.5 flex items-center justify-between gap-3 transition-colors">
-        {/* Brand + Upload Button */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-white font-bold shadow">
+      <header className="h-12 shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-2 sm:px-3.5 flex items-center justify-between gap-1.5 sm:gap-3 transition-colors">
+        {/* Brand + Mobile Config Button + Upload Button */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Nút mở thanh Cấu hình trên Mobile */}
+          <button
+            type="button"
+            onClick={() => setIsMobilePanelOpen(true)}
+            title="Mở bảng cấu hình thuật toán"
+            className="md:hidden px-2 py-1.5 rounded-md text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-700 flex items-center gap-1 transition shrink-0 cursor-pointer"
+          >
+            <Sliders className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+            <span className="hidden min-[400px]:inline">Cấu hình</span>
+          </button>
+
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-cyan-400 flex items-center justify-center text-white font-bold shadow shrink-0">
             <Cpu className="w-3.5 h-3.5" />
           </div>
-          <div className="flex items-center gap-1.5">
-            <h1 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">
+          <div className="hidden sm:flex items-center gap-1.5">
+            <h1 className="text-sm font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
               AlgoTrace Studio
             </h1>
             <InfoTooltip
@@ -758,27 +779,28 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="ml-1 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm flex items-center gap-1.5 transition shrink-0 cursor-pointer"
+            title="Tải ảnh lên"
+            className="px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm flex items-center gap-1.5 transition shrink-0 cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>Tải Ảnh Lên</span>
+            <span className="hidden min-[440px]:inline">Tải Ảnh</span>
           </button>
         </div>
 
         {/* Bộ điều khiển Lịch Sử (Undo / Redo / History Timeline Popover) */}
         <div
           ref={historyPopupRef}
-          className="relative flex items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/80"
+          className="relative flex items-center gap-0.5 sm:gap-1 bg-slate-100 dark:bg-slate-800/90 p-0.5 rounded-lg border border-slate-200/80 dark:border-slate-700/80 shrink-0"
         >
           <button
             type="button"
             disabled={!canUndo}
             onClick={handleUndo}
             title="Hoàn tác (Ctrl+Z / Cmd+Z)"
-            className="px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
+            className="px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
           >
             <Undo2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Hoàn tác</span>
+            <span className="hidden lg:inline">Hoàn tác</span>
           </button>
 
           <button
@@ -786,24 +808,24 @@ export const App: React.FC = () => {
             disabled={!canRedo}
             onClick={handleRedo}
             title="Làm lại (Ctrl+Y / Cmd+Shift+Z)"
-            className="px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
+            className="px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer disabled:cursor-not-allowed"
           >
             <Redo2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Làm lại</span>
+            <span className="hidden lg:inline">Làm lại</span>
           </button>
 
           <button
             type="button"
             onClick={() => setShowHistoryPopup((prev) => !prev)}
             title="Xem danh sách lịch sử các bước thao tác"
-            className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition cursor-pointer ${
+            className={`px-1.5 sm:px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition cursor-pointer ${
               showHistoryPopup
                 ? 'bg-indigo-600 text-white'
                 : 'text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700'
             }`}
           >
             <History className="w-3.5 h-3.5" />
-            <span>Lịch sử</span>
+            <span className="hidden md:inline">Lịch sử</span>
             <span
               className={`text-[10px] font-mono px-1 rounded ${
                 showHistoryPopup
@@ -817,7 +839,7 @@ export const App: React.FC = () => {
 
           {/* Popup danh sách Lịch sử */}
           {showHistoryPopup && (
-            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+            <div className="fixed sm:absolute top-13 sm:top-full left-3 right-3 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:mt-1.5 sm:w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden">
               <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
                   <History className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
@@ -882,7 +904,7 @@ export const App: React.FC = () => {
         </div>
 
         {/* Theme Toggle & Export Actions */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           {result && (
             <span className="hidden lg:inline-block font-mono text-[11px] text-slate-500 dark:text-slate-400 mr-1">
               {(exportSvgBytes / 1024).toFixed(1)} KB
@@ -910,7 +932,7 @@ export const App: React.FC = () => {
             type="button"
             onClick={() => setShowSvgCodeModal(true)}
             title="Xem mã nguồn XML SVG"
-            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+            className="px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
           >
             <Code2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
             <span className="hidden md:inline">Mã SVG</span>
@@ -920,12 +942,12 @@ export const App: React.FC = () => {
             type="button"
             onClick={handleCopySvg}
             title="Sao chép mã SVG vào Clipboard"
-            className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+            className="px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
           >
             {copiedSvg ? (
               <>
                 <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                <span className="text-emerald-600 dark:text-emerald-400">
+                <span className="hidden sm:inline text-emerald-600 dark:text-emerald-400">
                   Đã chép
                 </span>
               </>
@@ -940,16 +962,18 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={handleDownloadSvg}
-            className="px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer"
+            title="Tải file .SVG về máy"
+            className="px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Xuất .SVG</span>
+            <span className="hidden sm:inline">Xuất .SVG</span>
+            <span className="sm:hidden">SVG</span>
           </button>
         </div>
       </header>
 
       {/* Main Workspace */}
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex min-h-0 relative">
         <ControlPanel
           params={params}
           stats={result?.stats || null}
@@ -959,9 +983,20 @@ export const App: React.FC = () => {
             result ? { width: result.width, height: result.height } : null
           }
           isEraserMode={isEraserMode}
-          onToggleEraserMode={() => setIsEraserMode((prev) => !prev)}
+          isMobileOpen={isMobilePanelOpen}
+          onCloseMobile={() => setIsMobilePanelOpen(false)}
+          onToggleEraserMode={() => {
+            setIsEraserMode((prev) => {
+              const next = !prev;
+              if (next) setIsMobilePanelOpen(false);
+              return next;
+            });
+          }}
           onClearManualErases={handleClearManualErases}
-          onUploadFile={handleFileSelected}
+          onUploadFile={(file) => {
+            handleFileSelected(file);
+            setIsMobilePanelOpen(false);
+          }}
           onChange={(updater, actionLabel) => {
             setParams((prev) => {
               let next = updater(prev);
@@ -1101,9 +1136,9 @@ export const App: React.FC = () => {
 
       {/* Overlay khi kéo thả file ảnh vào cửa sổ */}
       {isDraggingFile && (
-        <div className="fixed inset-0 z-50 bg-indigo-950/80 backdrop-blur-sm border-4 border-dashed border-indigo-400 flex flex-col items-center justify-center pointer-events-none">
-          <ImageIcon className="w-14 h-14 text-indigo-300 mb-3 animate-bounce" />
-          <p className="text-lg font-bold text-white">
+        <div className="fixed inset-0 z-50 bg-indigo-950/80 backdrop-blur-sm border-4 border-dashed border-indigo-400 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+          <ImageIcon className="w-12 h-12 sm:w-14 sm:h-14 text-indigo-300 mb-3 animate-bounce" />
+          <p className="text-base sm:text-lg font-bold text-white">
             Thả ảnh JPG / PNG / WebP vào đây để chuyển sang Vector SVG
           </p>
         </div>
@@ -1111,12 +1146,12 @@ export const App: React.FC = () => {
 
       {/* Modal xem trực tiếp mã nguồn XML <svg> */}
       {showSvgCodeModal && result && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl w-full max-w-4xl max-h-[82vh] flex flex-col shadow-2xl overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Code2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl w-full max-w-4xl max-h-[86dvh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Code2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                <h3 className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
                   {isEmbeddedOutput ? (
                     'Mã nguồn SVG (nhúng ảnh gốc)'
                   ) : (
@@ -1130,12 +1165,12 @@ export const App: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowSvgCodeModal(false)}
-                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="p-4 flex-1 overflow-auto bg-slate-950 font-mono text-xs text-slate-200">
+            <div className="p-3 sm:p-4 flex-1 overflow-auto bg-slate-950 font-mono text-xs text-slate-200">
               <pre className="whitespace-pre-wrap break-all select-all">
                 {isEmbeddedOutput
                   ? exportSvgString?.replace(/(data:[^"]{80})[^"]*/g, '$1…')

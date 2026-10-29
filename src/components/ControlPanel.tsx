@@ -23,6 +23,7 @@ import {
   MousePointerClick,
   Trash2,
   Maximize,
+  X,
 } from 'lucide-react';
 import { PipelineStats, VectorizerParams } from '../types/vectorizer';
 import { PURPOSE_PRESETS, PurposePreset } from '../engine/sampleImages';
@@ -35,6 +36,8 @@ interface ControlPanelProps {
   currentImageName: string;
   imageDimensions: { width: number; height: number } | null;
   isEraserMode: boolean;
+  isMobileOpen?: boolean;
+  onCloseMobile?: () => void;
   onToggleEraserMode: () => void;
   onClearManualErases: () => void;
   onUploadFile: (file: File) => void;
@@ -96,6 +99,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   currentImageName,
   imageDimensions,
   isEraserMode,
+  isMobileOpen = false,
+  onCloseMobile,
   onToggleEraserMode,
   onClearManualErases,
   onUploadFile,
@@ -103,6 +108,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onReset,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const drawerTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const [lastClickedPresetId, setLastClickedPresetId] =
     useState<string>('logo-icon');
 
@@ -125,79 +131,128 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const manualEraseCount = params.manualErases?.length ?? 0;
 
   return (
-    <aside className="w-[316px] shrink-0 bg-white dark:bg-slate-900/95 border-r border-slate-200 dark:border-slate-800 flex flex-col h-full select-none transition-colors">
-      {/* KHỐI TẢI ẢNH GỌN GÀNG */}
-      <div className="p-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 space-y-1.5">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/bmp,image/gif"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) onUploadFile(file);
-            e.target.value = '';
-          }}
-          className="hidden"
+    <>
+      {isMobileOpen && (
+        <div
+          onClick={onCloseMobile}
+          className="fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px] md:hidden"
         />
-
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex-1 py-2 px-3 rounded-lg border border-dashed border-indigo-400 dark:border-indigo-500/60 hover:border-indigo-500 bg-indigo-50/70 dark:bg-indigo-500/10 hover:bg-indigo-100/70 dark:hover:bg-indigo-500/20 transition flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Upload className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-            <span className="text-xs font-semibold text-indigo-900 dark:text-indigo-200 truncate">
-              Chọn ảnh hoặc Dán (Ctrl+V)
-            </span>
-          </button>
-
-          <InfoTooltip
-            side="right"
-            title="Hỗ trợ định dạng & Thao tác nhanh"
-            content={
-              <ul className="list-disc pl-3.5 space-y-1">
-                <li>Hỗ trợ: JPG, PNG, WebP, GIF, BMP.</li>
-                <li>Kéo thả trực tiếp file ảnh vào bất kỳ đâu trên màn hình.</li>
-                <li>
-                  Bấm <strong>Ctrl+V</strong> (hoặc <strong>Cmd+V</strong>) để
-                  dán ảnh chụp màn hình từ Clipboard.
-                </li>
-              </ul>
-            }
+      )}
+      <aside
+        onTouchStart={(e) => {
+          const target = e.target as HTMLElement;
+          if (target.closest('input[type="range"]')) {
+            drawerTouchStartRef.current = null;
+            return;
+          }
+          if (e.touches.length === 1) {
+            drawerTouchStartRef.current = {
+              x: e.touches[0].clientX,
+              y: e.touches[0].clientY,
+            };
+          }
+        }}
+        onTouchEnd={(e) => {
+          const start = drawerTouchStartRef.current;
+          drawerTouchStartRef.current = null;
+          if (!start || !onCloseMobile || e.changedTouches.length === 0) return;
+          const dx = e.changedTouches[0].clientX - start.x;
+          const dy = e.changedTouches[0].clientY - start.y;
+          // Vuốt ngang sang trái (> 55px) để đóng ngăn kéo trên Mobile
+          if (dx < -55 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+            onCloseMobile();
+          }
+        }}
+        className={`fixed inset-y-0 left-0 z-40 w-[86vw] max-w-[324px] shadow-2xl transform transition-transform duration-200 ease-out md:static md:translate-x-0 md:w-[316px] md:shadow-none shrink-0 bg-white dark:bg-slate-900/95 border-r border-slate-200 dark:border-slate-800 flex flex-col h-full select-none ${
+          isMobileOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        {/* KHỐI TẢI ẢNH GỌN GÀNG */}
+        <div className="p-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 space-y-1.5">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/bmp,image/gif"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) onUploadFile(file);
+              e.target.value = '';
+            }}
+            className="hidden"
           />
-        </div>
 
-        {imageDimensions && (
-          <div className="px-2 py-1 rounded bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between text-[11px]">
-            <span className="text-slate-700 dark:text-slate-300 font-medium truncate flex items-center gap-1.5 max-w-[185px]">
-              <ImageIcon className="w-3 h-3 text-indigo-600 dark:text-indigo-400 shrink-0" />
-              <span className="truncate">{currentImageName}</span>
-            </span>
-            <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
-              {imageDimensions.width}×{imageDimensions.height}px
-            </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex-1 py-2 px-3 rounded-lg border border-dashed border-indigo-400 dark:border-indigo-500/60 hover:border-indigo-500 bg-indigo-50/70 dark:bg-indigo-500/10 hover:bg-indigo-100/70 dark:hover:bg-indigo-500/20 transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <span className="text-xs font-semibold text-indigo-900 dark:text-indigo-200 truncate">
+                Chọn ảnh hoặc Dán (Ctrl+V)
+              </span>
+            </button>
+
+            <InfoTooltip
+              side="right"
+              title="Hỗ trợ định dạng & Thao tác nhanh"
+              content={
+                <ul className="list-disc pl-3.5 space-y-1">
+                  <li>Hỗ trợ: JPG, PNG, WebP, GIF, BMP.</li>
+                  <li>
+                    Kéo thả trực tiếp file ảnh vào bất kỳ đâu trên màn hình.
+                  </li>
+                  <li>
+                    Bấm <strong>Ctrl+V</strong> (hoặc <strong>Cmd+V</strong>) để
+                    dán ảnh chụp màn hình từ Clipboard.
+                  </li>
+                </ul>
+              }
+            />
           </div>
-        )}
-      </div>
 
-      {/* Header Thông số */}
-      <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Sliders className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-            Cấu hình Vector hóa
-          </h2>
+          {imageDimensions && (
+            <div className="px-2 py-1 rounded bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between text-[11px]">
+              <span className="text-slate-700 dark:text-slate-300 font-medium truncate flex items-center gap-1.5 max-w-[185px]">
+                <ImageIcon className="w-3 h-3 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                <span className="truncate">{currentImageName}</span>
+              </span>
+              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
+                {imageDimensions.width}×{imageDimensions.height}px
+              </span>
+            </div>
+          )}
         </div>
-        <button
-          onClick={onReset}
-          title="Khôi phục thông số mặc định"
-          className="text-[11px] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/70 hover:bg-slate-200 dark:hover:bg-slate-800 transition cursor-pointer"
-        >
-          <RotateCcw className="w-3 h-3" />
-          Reset
-        </button>
-      </div>
+
+        {/* Header Thông số */}
+        <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Sliders className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+              Cấu hình Vector hóa
+            </h2>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onReset}
+              title="Khôi phục thông số mặc định"
+              className="text-[11px] text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/70 hover:bg-slate-200 dark:hover:bg-slate-800 transition cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Reset
+            </button>
+            {onCloseMobile && (
+              <button
+                type="button"
+                onClick={onCloseMobile}
+                title="Đóng bảng cấu hình"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 md:hidden cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
 
       {/* Scrollable Steps */}
       <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
@@ -1059,6 +1114,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </span>
         )}
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };
