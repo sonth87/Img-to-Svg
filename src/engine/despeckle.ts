@@ -899,7 +899,7 @@ export function applyPaletteOverridesAndDespeckle(
       quantizedBuffer[outIdx] = col.r;
       quantizedBuffer[outIdx + 1] = col.g;
       quantizedBuffer[outIdx + 2] = col.b;
-      quantizedBuffer[outIdx + 3] = 255;
+      quantizedBuffer[outIdx + 3] = col.a;
     }
   }
 

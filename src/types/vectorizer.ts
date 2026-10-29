@@ -100,6 +100,8 @@ export interface VectorPathData {
   /** Nếu true, thẻ <path> sẽ vẽ dạng đường đơn (fill="none" stroke={hex} stroke-width={strokeWidth}) */
   isStroke?: boolean;
   strokeWidth?: number;
+  /** Độ đục của lớp màu (0..1) khi ảnh gốc có mảng bán trong suốt; bỏ trống = 1 */
+  opacity?: number;
 }
 
 export interface PipelineStats {

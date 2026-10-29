@@ -48,6 +48,11 @@ export function buildSvgDocument(
       lines.push(
         `  <path id="layer-stroke-${path.colorId}" fill="none" stroke="${path.hex}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" d="${path.d}" />`
       );
+    } else if (path.opacity !== undefined) {
+      // Lớp bán trong suốt: không viền che khe (viền chồng lên fill sẽ đậm hơn ở mép)
+      lines.push(
+        `  <path id="layer-color-${path.colorId}" fill="${path.hex}" fill-opacity="${path.opacity}" fill-rule="evenodd" d="${path.d}" />`
+      );
     } else if (useSeamSeal) {
       lines.push(
         `  <path id="layer-color-${path.colorId}" fill="${path.hex}" stroke="${path.hex}" stroke-width="${seamWidth}" stroke-linejoin="round" stroke-linecap="round" fill-rule="evenodd" d="${path.d}" />`

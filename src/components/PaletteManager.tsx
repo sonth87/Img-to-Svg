@@ -136,7 +136,7 @@ export const PaletteManager: React.FC<PaletteManagerProps> = ({
               >
                 <span
                   className="block w-full h-full"
-                  style={{ backgroundColor: col.hex }}
+                  style={{ backgroundColor: col.hex, opacity: col.a / 255 }}
                 />
                 <input
                   type="color"
@@ -151,6 +151,14 @@ export const PaletteManager: React.FC<PaletteManagerProps> = ({
                   <span className="text-[10.5px] font-mono text-slate-800 dark:text-slate-200 font-medium">
                     {col.hex}
                   </span>
+                  {col.a < 255 && (
+                    <span
+                      className="text-[9px] px-1 rounded bg-violet-500/20 text-violet-600 dark:text-violet-300 font-bold"
+                      title="Lớp bán trong suốt (giữ nguyên độ đục của ảnh gốc)"
+                    >
+                      {Math.round((col.a / 255) * 100)}%
+                    </span>
+                  )}
                   {col.isStrokeLayer ? (
                     <span className="text-[9px] px-1 rounded bg-sky-500/20 text-sky-600 dark:text-sky-300 font-bold">
                       1-LINE

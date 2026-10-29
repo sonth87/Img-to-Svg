@@ -220,6 +220,11 @@ export function runVectorizationPipeline(
     curveFittingMs = Math.round(performance.now() - t4);
   }
 
+  for (const p of paths) {
+    const a = updatedPalette[p.colorId]?.a ?? 255;
+    if (!p.isStroke && a < 255) p.opacity = Math.round((a / 255) * 1000) / 1000;
+  }
+
   const svgString = buildSvgDocument(paths, width, height);
   const executionMs = Math.round(performance.now() - tStart);
 

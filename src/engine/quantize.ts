@@ -774,6 +774,145 @@ function buildEdgeSketchMask(
   return edges;
 }
 
+/**
+ * Phân loại độ trong suốt của từng pixel theo các "mức opacity" phẳng có thật trong ảnh.
+ * Icon / logo hay có mảng bán trong suốt (vd. đen alpha 40%): trước đây ngưỡng cứng alpha < 128
+ * xóa sạch các mảng này. Mức opacity = đỉnh histogram alpha của các pixel nằm giữa mảng (3x3 đồng đều);
+ * pixel viền anti-alias chỉ được gán vào mức bán trong suốt khi ở gần lõi của mức đó, nên viền mờ
+ * của mảng đặc vẫn cắt ở ngưỡng 50% như cũ (không sinh quầng mờ quanh mọi hình).
+ * Trả về `levels` (tăng dần, phần tử cuối luôn là 255) và `pixelLevel` (chỉ số mức, -1 = trong suốt).
+ */
+function classifyAlphaLevels(
+  src: Uint8ClampedArray,
+  width: number,
+  height: number
+): { levels: number[]; pixelLevel: Int8Array } {
+  const totalPixels = width * height;
+  const pixelLevel = new Int8Array(totalPixels).fill(-1);
+
+  const plateauHist = new Float64Array(256);
+  let visiblePixels = 0;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const a = src[(row + x) * 4 + 3];
+      if (a >= 16) visiblePixels++;
+      if (a < 16 || a >= 240 || x === 0 || y === 0 || x === width - 1 || y === height - 1)
+        continue;
+      let minA = a;
+      let maxA = a;
+      for (let dy = -1; dy <= 1; dy++) {
+        const rOff = (y + dy) * width + x;
+        for (let dx = -1; dx <= 1; dx++) {
+          const na = src[(rOff + dx) * 4 + 3];
+          if (na < minA) minA = na;
+          if (na > maxA) maxA = na;
+        }
+      }
+      if (maxA - minA <= 6) plateauHist[a]++;
+    }
+  }
+
+  // Đỉnh histogram đủ lớn VÀ đủ nhọn mới tính là 1 mức opacity (tối đa 4 mức bán trong suốt).
+  // Mảng phẳng thật dồn gần hết vào ±2 quanh đỉnh; bóng đổ mờ (alpha giảm dần) trải đều nên bị loại.
+  const minPeak = Math.max(12, visiblePixels * 0.01);
+  const windowSum = (c: number, radius: number) => {
+    let s = 0;
+    for (let v = Math.max(0, c - radius); v <= Math.min(255, c + radius); v++) s += plateauHist[v];
+    return s;
+  };
+  const peaks: { alpha: number; weight: number }[] = [];
+  for (let a = 16; a < 240; a++) {
+    if (plateauHist[a] === 0) continue;
+    const w = windowSum(a, 2);
+    if (w < minPeak || w < windowSum(a, 12) * 0.75) continue;
+    let isMax = true;
+    for (let v = Math.max(16, a - 12); v <= Math.min(239, a + 12) && isMax; v++) {
+      if (v !== a && (plateauHist[v] > plateauHist[a] || (plateauHist[v] === plateauHist[a] && v < a)))
+        isMax = false;
+    }
+    if (isMax) peaks.push({ alpha: a, weight: w });
+  }
+  const levels = peaks
+    .sort((p, q) => q.weight - p.weight)
+    .slice(0, 4)
+    .map((p) => p.alpha)
+    .sort((p, q) => p - q);
+  levels.push(255);
+  const opaqueLevel = levels.length - 1;
+
+  if (opaqueLevel === 0) {
+    for (let i = 0; i < totalPixels; i++) {
+      if (src[i * 4 + 3] >= 128) pixelLevel[i] = 0;
+    }
+    return { levels, pixelLevel };
+  }
+
+  // Lõi của từng mức bán trong suốt (pixel giữa mảng, alpha sát mức)
+  const coreLevel = new Int8Array(totalPixels).fill(-1);
+  for (let y = 1; y < height - 1; y++) {
+    const row = y * width;
+    for (let x = 1; x < width - 1; x++) {
+      const i = row + x;
+      const a = src[i * 4 + 3];
+      for (let l = 0; l < opaqueLevel; l++) {
+        if (Math.abs(a - levels[l]) > 8) continue;
+        let uniform = true;
+        for (let dy = -1; dy <= 1 && uniform; dy++) {
+          const rOff = (y + dy) * width + x;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (Math.abs(src[(rOff + dx) * 4 + 3] - levels[l]) > 8) {
+              uniform = false;
+              break;
+            }
+          }
+        }
+        if (uniform) coreLevel[i] = l;
+        break;
+      }
+    }
+  }
+
+  // Ứng viên mỗi pixel = {trong suốt, 255} ∪ các mức có lõi trong bán kính R; chọn mức có alpha gần nhất
+  const R = 5;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      const i = row + x;
+      const a = src[i * 4 + 3];
+      if (a < 8) continue;
+      let best = a >= 128 ? opaqueLevel : -1;
+      let bestDiff = a >= 128 ? 255 - a : a;
+      if (coreLevel[i] >= 0) {
+        pixelLevel[i] = coreLevel[i];
+        continue;
+      }
+      const y0 = Math.max(0, y - R);
+      const y1 = Math.min(height - 1, y + R);
+      const x0 = Math.max(0, x - R);
+      const x1 = Math.min(width - 1, x + R);
+      for (let ny = y0; ny <= y1; ny++) {
+        const rOff = ny * width;
+        for (let nx = x0; nx <= x1; nx++) {
+          const l = coreLevel[rOff + nx];
+          if (l < 0) continue;
+          const d = Math.abs(a - levels[l]);
+          if (d < bestDiff) {
+            bestDiff = d;
+            best = l;
+          }
+        }
+      }
+      pixelLevel[i] = best;
+    }
+  }
+
+  return { levels, pixelLevel };
+}
+
+/** Khoảng cách alpha quy đổi sang đơn vị Delta-E (100% vs 40% opacity ≈ 60) để không gộp lẫn các mức opacity */
+const ALPHA_DISTANCE_SCALE = 100 / 255;
+
 export function quantizeImageColors(
   smoothedPixels: Uint8ClampedArray,
   rawSourcePixels: Uint8ClampedArray,
@@ -911,20 +1050,28 @@ export function quantizeImageColors(
 
   // Bước 2.1: Gom toàn bộ pixel vào Histogram 18-bit (RGB666: 64x64x64 = 262,144 thùng)
   // Không bỏ sót bất kỳ chi tiết màu nhỏ nào (khắc phục hoàn toàn lỗi lấy mẫu stride bỏ sót chi tiết)
+  // Mỗi mức opacity có histogram riêng -> màu ở 2 mức opacity khác nhau không bao giờ chung thùng
+  const { levels: alphaLevels, pixelLevel } = classifyAlphaLevels(
+    workingPixels,
+    width,
+    height
+  );
   const HIST_SIZE = 262144;
-  const histBinMap = new Int32Array(HIST_SIZE).fill(-1);
+  const histBinMap = new Int32Array(HIST_SIZE * alphaLevels.length).fill(-1);
   const pixelBinIndices = new Int32Array(totalPixels);
 
   const binCountList: number[] = [];
   const binSumRList: number[] = [];
   const binSumGList: number[] = [];
   const binSumBList: number[] = [];
+  const binAlphaList: number[] = [];
   let numBins = 0;
   let opaquePixels = 0;
 
   for (let i = 0; i < totalPixels; i++) {
     const idx = i * 4;
-    if (workingPixels[idx + 3] < 128) {
+    const level = pixelLevel[i];
+    if (level < 0) {
       pixelBinIndices[i] = -1;
       labelMap[i] = -1;
       continue;
@@ -933,7 +1080,8 @@ export function quantizeImageColors(
     const r = workingPixels[idx];
     const g = workingPixels[idx + 1];
     const b = workingPixels[idx + 2];
-    const key = ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
+    const key =
+      level * HIST_SIZE + (((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2));
 
     let binId = histBinMap[key];
     if (binId === -1) {
@@ -943,6 +1091,7 @@ export function quantizeImageColors(
       binSumRList.push(r);
       binSumGList.push(g);
       binSumBList.push(b);
+      binAlphaList.push(alphaLevels[level]);
     } else {
       binCountList[binId]++;
       binSumRList[binId] += r;
@@ -962,6 +1111,7 @@ export function quantizeImageColors(
   const binL = new Float32Array(numBins);
   const binA = new Float32Array(numBins);
   const binB = new Float32Array(numBins);
+  const binAl = new Float32Array(numBins);
   const binWeight = new Float32Array(numBins);
   // Trọng số dùng cho khởi tạo K-Means++ (nén nhẹ bằng lũy thừa 0.75 để các chi tiết màu nhỏ nhưng rực rỡ vẫn được chọn)
   const initWeight = new Float32Array(numBins);
@@ -977,6 +1127,7 @@ export function quantizeImageColors(
     binL[b] = l;
     binA[b] = la;
     binB[b] = lb;
+    binAl[b] = binAlphaList[b] * ALPHA_DISTANCE_SCALE;
     binWeight[b] = cnt;
     initWeight[b] = Math.pow(cnt, 0.75);
     if (cnt > binCountList[maxWeightBin]) {
@@ -988,11 +1139,13 @@ export function quantizeImageColors(
   const cL = new Float32Array(effectiveK);
   const cA = new Float32Array(effectiveK);
   const cB = new Float32Array(effectiveK);
+  const cAl = new Float32Array(effectiveK);
 
   // Tâm đầu tiên là thùng màu có tần suất cao nhất
   cL[0] = binL[maxWeightBin];
   cA[0] = binA[maxWeightBin];
   cB[0] = binB[maxWeightBin];
+  cAl[0] = binAl[maxWeightBin];
 
   const minDistSq = new Float32Array(numBins).fill(Infinity);
 
@@ -1009,13 +1162,15 @@ export function quantizeImageColors(
     const prevL = cL[clusterIdx - 1];
     const prevA = cA[clusterIdx - 1];
     const prevB = cB[clusterIdx - 1];
+    const prevAl = cAl[clusterIdx - 1];
 
     let totalWeightedDist = 0;
     for (let b = 0; b < numBins; b++) {
       const dl = binL[b] - prevL;
       const da = binA[b] - prevA;
       const db = binB[b] - prevB;
-      const dSq = dl * dl + da * da + db * db;
+      const dal = binAl[b] - prevAl;
+      const dSq = dl * dl + da * da + db * db + dal * dal;
       if (dSq < minDistSq[b]) {
         minDistSq[b] = dSq;
       }
@@ -1030,6 +1185,7 @@ export function quantizeImageColors(
       cL[clusterIdx] = binL[fallbackIdx];
       cA[clusterIdx] = binA[fallbackIdx];
       cB[clusterIdx] = binB[fallbackIdx];
+      cAl[clusterIdx] = binAl[fallbackIdx];
     } else {
       const target = totalWeightedDist * nextRand();
       let acc = 0;
@@ -1044,12 +1200,14 @@ export function quantizeImageColors(
       cL[clusterIdx] = binL[chosen];
       cA[clusterIdx] = binA[chosen];
       cB[clusterIdx] = binB[chosen];
+      cAl[clusterIdx] = binAl[chosen];
     }
   }
 
   const sumL = new Float64Array(effectiveK);
   const sumA = new Float64Array(effectiveK);
   const sumB = new Float64Array(effectiveK);
+  const sumAl = new Float64Array(effectiveK);
   const counts = new Float64Array(effectiveK);
 
   const maxIters = effectiveK > 64 ? 10 : 14;
@@ -1057,12 +1215,14 @@ export function quantizeImageColors(
     sumL.fill(0);
     sumA.fill(0);
     sumB.fill(0);
+    sumAl.fill(0);
     counts.fill(0);
 
     for (let b = 0; b < numBins; b++) {
       const bl = binL[b];
       const ba = binA[b];
       const bb = binB[b];
+      const bal = binAl[b];
       const w = binWeight[b];
 
       let bestCluster = 0;
@@ -1072,7 +1232,8 @@ export function quantizeImageColors(
         const dl = bl - cL[c];
         const da = ba - cA[c];
         const db = bb - cB[c];
-        const dist = dl * dl + da * da + db * db;
+        const dal = bal - cAl[c];
+        const dist = dl * dl + da * da + db * db + dal * dal;
         if (dist < bestDist) {
           bestDist = dist;
           bestCluster = c;
@@ -1082,6 +1243,7 @@ export function quantizeImageColors(
       sumL[bestCluster] += bl * w;
       sumA[bestCluster] += ba * w;
       sumB[bestCluster] += bb * w;
+      sumAl[bestCluster] += bal * w;
       counts[bestCluster] += w;
     }
 
@@ -1091,14 +1253,17 @@ export function quantizeImageColors(
         const newL = sumL[c] / counts[c];
         const newA = sumA[c] / counts[c];
         const newB = sumB[c] / counts[c];
+        const newAl = sumAl[c] / counts[c];
         const shift =
           (newL - cL[c]) * (newL - cL[c]) +
           (newA - cA[c]) * (newA - cA[c]) +
-          (newB - cB[c]) * (newB - cB[c]);
+          (newB - cB[c]) * (newB - cB[c]) +
+          (newAl - cAl[c]) * (newAl - cAl[c]);
         if (shift > maxShift) maxShift = shift;
         cL[c] = newL;
         cA[c] = newA;
         cB[c] = newB;
+        cAl[c] = newAl;
       }
     }
     if (maxShift < 0.04) break;
@@ -1125,7 +1290,8 @@ export function quantizeImageColors(
       const dl = cL[cPrimary] - cL[cSecondary];
       const da = cA[cPrimary] - cA[cSecondary];
       const db = cB[cPrimary] - cB[cSecondary];
-      const distSq = dl * dl + da * da + db * db;
+      const dal = cAl[cPrimary] - cAl[cSecondary];
+      const distSq = dl * dl + da * da + db * db + dal * dal;
 
       if (distSq <= mergeDeltaSq) {
         clusterRedirect[cSecondary] = cPrimary;
@@ -1145,12 +1311,14 @@ export function quantizeImageColors(
   const fL = new Float32Array(finalCount);
   const fA = new Float32Array(finalCount);
   const fB = new Float32Array(finalCount);
+  const fAl = new Float32Array(finalCount);
 
   for (let m = 0; m < finalCount; m++) {
     const orig = activeClusterIds[m] ?? 0;
     fL[m] = cL[orig];
     fA[m] = cA[orig];
     fB[m] = cB[orig];
+    fAl[m] = cAl[orig];
   }
 
   // Bước 2.2: Ánh xạ từng thùng màu 18-bit vào cụm cuối cùng chính xác nhất
@@ -1158,19 +1326,22 @@ export function quantizeImageColors(
   const accumR = new Float64Array(finalCount);
   const accumG = new Float64Array(finalCount);
   const accumB = new Float64Array(finalCount);
+  const accumAlpha = new Float64Array(finalCount);
   const pixelCounts = new Int32Array(finalCount);
 
   for (let b = 0; b < numBins; b++) {
     const bl = binL[b];
     const ba = binA[b];
     const bb = binB[b];
+    const bal = binAl[b];
     let minDist = Infinity;
     let bestM = 0;
     for (let m = 0; m < finalCount; m++) {
       const dl = bl - fL[m];
       const da = ba - fA[m];
       const db = bb - fB[m];
-      const d = dl * dl + da * da + db * db;
+      const dal = bal - fAl[m];
+      const d = dl * dl + da * da + db * db + dal * dal;
       if (d < minDist) {
         minDist = d;
         bestM = m;
@@ -1180,6 +1351,7 @@ export function quantizeImageColors(
     accumR[bestM] += binSumRList[b];
     accumG[bestM] += binSumGList[b];
     accumB[bestM] += binSumBList[b];
+    accumAlpha[bestM] += binAlphaList[b] * binCountList[b];
     pixelCounts[bestM] += binCountList[b];
   }
 
@@ -1199,12 +1371,13 @@ export function quantizeImageColors(
     const r = cnt > 0 ? Math.round(accumR[m] / cnt) : 0;
     const g = cnt > 0 ? Math.round(accumG[m] / cnt) : 0;
     const b = cnt > 0 ? Math.round(accumB[m] / cnt) : 0;
+    const a = cnt > 0 ? Math.round(accumAlpha[m] / cnt) : 255;
     palette.push({
       id: m,
       r,
       g,
       b,
-      a: 255,
+      a,
       hex: rgbToHex(r, g, b),
       pixelCount: cnt,
       percentage: (cnt / safeTotal) * 100,

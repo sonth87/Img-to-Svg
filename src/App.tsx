@@ -31,6 +31,9 @@ import { InfoTooltip } from './components/InfoTooltip';
 import VectorizerWorker from './engine/worker?worker';
 
 const DEFAULT_PROCESSING_DIMENSION = 1024;
+/** Ảnh nhỏ (icon 32-256px) được phóng to trước khi dò: mép anti-alias nội suy cho biên mượt dưới mức pixel */
+const SMALL_IMAGE_TARGET_DIMENSION = 512;
+const MAX_SMALL_IMAGE_UPSCALE = 4;
 
 /** Kích thước ảnh đem đi dò vector theo tùy chọn "Độ phân giải xử lý" (0 = ảnh gốc, có giới hạn trên) */
 function fitProcessingDims(
@@ -42,6 +45,16 @@ function fitProcessingDims(
     resolution === 0
       ? MAX_ORIGINAL_PROCESSING_DIMENSION
       : resolution ?? DEFAULT_PROCESSING_DIMENSION;
+  const longSide = Math.max(naturalW, naturalH);
+  if (longSide < SMALL_IMAGE_TARGET_DIMENSION) {
+    // Phóng theo bội số nguyên; quá 4x thì đường biên bám theo bậc thang pixel gốc -> gợn sóng
+    const factor = Math.min(
+      MAX_SMALL_IMAGE_UPSCALE,
+      Math.max(1, Math.round(SMALL_IMAGE_TARGET_DIMENSION / longSide)),
+      Math.floor(maxDim / longSide)
+    );
+    return { w: naturalW * factor, h: naturalH * factor };
+  }
   if (naturalW <= maxDim && naturalH <= maxDim) return { w: naturalW, h: naturalH };
   const scale = maxDim / Math.max(naturalW, naturalH);
   return {
@@ -160,6 +173,7 @@ export const App: React.FC = () => {
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, w, h);
       const imgData = ctx.getImageData(0, 0, w, h);
 

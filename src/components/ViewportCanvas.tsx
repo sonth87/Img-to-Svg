@@ -707,10 +707,11 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                           <path
                             key={p.colorId}
                             fill={p.hex}
-                            stroke={seamWidth > 0 ? p.hex : undefined}
-                            strokeWidth={seamWidth > 0 ? seamWidth : undefined}
-                            strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
-                            strokeLinecap={seamWidth > 0 ? 'round' : undefined}
+                            fillOpacity={p.opacity}
+                            stroke={seamWidth > 0 && p.opacity === undefined ? p.hex : undefined}
+                            strokeWidth={seamWidth > 0 && p.opacity === undefined ? seamWidth : undefined}
+                            strokeLinejoin={seamWidth > 0 && p.opacity === undefined ? 'round' : undefined}
+                            strokeLinecap={seamWidth > 0 && p.opacity === undefined ? 'round' : undefined}
                             fillRule="evenodd"
                             d={p.d}
                           />
@@ -799,10 +800,11 @@ export const ViewportCanvas: React.FC<ViewportCanvasProps> = ({
                         <path
                           key={p.colorId}
                           fill={p.hex}
-                          stroke={seamWidth > 0 ? p.hex : undefined}
-                          strokeWidth={seamWidth > 0 ? seamWidth : undefined}
-                          strokeLinejoin={seamWidth > 0 ? 'round' : undefined}
-                          strokeLinecap={seamWidth > 0 ? 'round' : undefined}
+                          fillOpacity={p.opacity}
+                          stroke={seamWidth > 0 && p.opacity === undefined ? p.hex : undefined}
+                          strokeWidth={seamWidth > 0 && p.opacity === undefined ? seamWidth : undefined}
+                          strokeLinejoin={seamWidth > 0 && p.opacity === undefined ? 'round' : undefined}
+                          strokeLinecap={seamWidth > 0 && p.opacity === undefined ? 'round' : undefined}
                           fillRule="evenodd"
                           d={p.d}
                         />

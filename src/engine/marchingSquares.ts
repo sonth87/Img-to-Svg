@@ -440,7 +440,9 @@ export function extractAllColorLayerContours(
     }
   }
 
+  // Lớp bán trong suốt vẽ trước: được lót xuống dưới lớp đặc (bị che kín) nên chỗ nối 2 lớp không hở khía
   const sortedColors = [...activeColors].sort((a, b) => {
+    if ((a.a < 255) !== (b.a < 255)) return a.a < 255 ? -1 : 1;
     const scoreA =
       a.pixelCount + borderCounts[a.id] * Math.max(width, height) * 0.5;
     const scoreB =
@@ -452,6 +454,11 @@ export function extractAllColorLayerContours(
   sortedColors.forEach((col, rank) => {
     colorRank[col.id] = rank;
   });
+  // Pixel của lớp bán trong suốt không được lớp khác lót xuống dưới (sẽ lộ qua và làm đậm màu)
+  const isTranslucent = new Uint8Array(numPalette);
+  for (const col of activeColors) {
+    if (col.a < 255) isTranslucent[col.id] = 1;
+  }
 
   const results: TracedLayerContours[] = [];
   // Khi số lượng màu > 16 hoặc ở chế độ Chi Tiết Cao (simplifyTolerance <= 0.55):
@@ -566,7 +573,7 @@ export function extractAllColorLayerContours(
         if (cx > 0) {
           const nIdx = curr - 1;
           const nLbl = labelMap[nIdx];
-          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank) {
+          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank && (nLbl === targetId || !isTranslucent[nLbl])) {
             fullMask[nIdx] = 1;
             bfsQueue[tail++] = nIdx;
           }
@@ -574,7 +581,7 @@ export function extractAllColorLayerContours(
         if (cx + 1 < width) {
           const nIdx = curr + 1;
           const nLbl = labelMap[nIdx];
-          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank) {
+          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank && (nLbl === targetId || !isTranslucent[nLbl])) {
             fullMask[nIdx] = 1;
             bfsQueue[tail++] = nIdx;
           }
@@ -582,7 +589,7 @@ export function extractAllColorLayerContours(
         if (cy > 0) {
           const nIdx = curr - width;
           const nLbl = labelMap[nIdx];
-          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank) {
+          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank && (nLbl === targetId || !isTranslucent[nLbl])) {
             fullMask[nIdx] = 1;
             bfsQueue[tail++] = nIdx;
           }
@@ -590,7 +597,7 @@ export function extractAllColorLayerContours(
         if (cy + 1 < height) {
           const nIdx = curr + width;
           const nLbl = labelMap[nIdx];
-          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank) {
+          if (!fullMask[nIdx] && nLbl >= 0 && colorRank[nLbl] >= rank && (nLbl === targetId || !isTranslucent[nLbl])) {
             fullMask[nIdx] = 1;
             bfsQueue[tail++] = nIdx;
           }
@@ -632,7 +639,7 @@ export function extractAllColorLayerContours(
       const roiMask = new Uint8Array(width * height);
       for (let i = 0; i < totalPixels; i++) {
         const lbl = labelMap[i];
-        if (lbl >= 0 && colorRank[lbl] >= 0) {
+        if (lbl >= 0 && colorRank[lbl] >= 0 && (lbl === targetId || !isTranslucent[lbl])) {
           roiMask[i] = 1;
         }
       }
